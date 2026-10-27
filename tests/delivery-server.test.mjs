@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createServer} from 'node:net';
+
+test('lost HTTP replies, simultaneous retries and Relay restart do not create duplicate turns',{timeout:15_000},async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'relay-delivery-server-'));let child;let abort;
+  t.after(()=>{abort?.abort();child?.kill();assert.equal(path.dirname(path.resolve(dir)),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});});
+  const reservation=createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+  const base=`http://127.0.0.1:${port}`;
+  const launch=()=>new Promise((resolve,reject)=>{child=spawn(process.execPath,['server.mjs'],{cwd:new URL('..',import.meta.url),windowsHide:true,env:{...process.env,HOST:'127.0.0.1',PORT:String(port),CODEX_RELAY_TOKEN:'fixture-token',CODEX_RELAY_NO_EMBEDDED:'1',CODEX_RELAY_PARENT_PIPE:'0',CODEX_RELAY_DATA_DIR:dir}});child.once('error',reject);child.stdout.on('data',chunk=>{if(String(chunk).includes('listening'))resolve();});});
+  const post=(url,data)=>fetch(base+url,{method:'POST',headers:{'content-type':'application/json','x-codex-relay-token':'fixture-token'},body:JSON.stringify(data)});
+  const get=async url=>(await fetch(base+url)).json();
+  await launch();
+  await post('/api/runner/local/events',{type:'thread_list',threads:[{id:'thread',cwd:dir,status:{type:'idle'}}]});
+  const session=(await get('/api/sessions')).sessions[0];
+  const body={text:'手机重试消息😀',requestId:'0123456789abcdef'};const url=`/api/sessions/${session.id}/turns`;
+  const replies=await Promise.all([post(url,body),post(url,body)]);assert.deepEqual(replies.map(reply=>reply.status),[202,202]);
+  assert.equal((await get(`/api/sessions/${session.id}/history`)).events.filter(event=>event.type==='user_message').length,1);
+  abort=new AbortController();const stream=await fetch(base+'/api/runner/local/commands',{headers:{'x-codex-relay-token':'fixture-token'},signal:abort.signal});
+  const data=await stream.body.getReader().read();assert.equal(new TextDecoder().decode(data.value).match(/"type":"startTurn"/g)?.length,1);
+  await post('/api/runner/local/events',{sessionId:session.id,message:{method:'runner/desktopAccepted',params:{threadId:'thread'}}});
+  assert.equal((await get('/api/deliveries/'+body.requestId)).state,'accepted');
+  abort.abort();const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;
+  await launch();assert.equal((await get('/api/deliveries/'+body.requestId)).state,'accepted');assert.equal((await post(url,body)).status,202);
+  assert.equal((await get('/api/sessions')).sessions[0].id,session.id);
+  assert.equal((await post(url,{...body,text:'changed'})).status,400);
+  const create={deviceId:'local',executionMode:'runner',cwd:dir,prompt:'new task',requestId:'abcdef0123456789'};
+  const created=await Promise.all([post('/api/sessions',create),post('/api/sessions',create)]);const values=await Promise.all(created.map(reply=>reply.json()));assert.equal(values[0].session.id,values[1].session.id);
+});

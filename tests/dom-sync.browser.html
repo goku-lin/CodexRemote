@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>Relay DOM regression check</title>
+<body><div id="fixture"></div><pre id="result">Running</pre>
+<script type="module">
+import {syncHtml,syncHtmlParts} from '/dom-sync.js';
+const fixture = document.querySelector('#fixture');
+const results = [];
+const check = (label, condition) => { results.push({label, passed: !!condition}); if (!condition) throw new Error(label); };
+const html = output => `<section data-turn-id="old"><details data-detail-key="history"><summary>上 163 条消息</summary><div><details data-detail-key="group"><summary>已使用浏览器编辑了多个文件运行了命令</summary><div><details data-detail-key="command"><summary>已运行 node --check app.js</summary><pre>${output}</pre></details></div></details></div></details><p>最终回复</p></section><section data-turn-id="live"><p>正在处理</p></section>`;
+try {
+  syncHtml(fixture, html('first'));
+  const oldTurn = fixture.firstElementChild;
+  const original = [...fixture.querySelectorAll('details')];
+  for (const detail of original) detail.open = true;
+  original[2].querySelector('summary').focus();
+  const focused = document.activeElement;
+  const observer = new MutationObserver(() => {});
+  observer.observe(fixture, {subtree:true, childList:true, attributes:true, characterData:true});
+  const noop = syncHtml(fixture, html('first'));
+  check('unchanged content performs zero DOM writes', !noop && observer.takeRecords().length === 0);
+  syncHtml(fixture, html('changed'));
+  check('all three disclosure nodes and their open states survive output updates', original.every(node => node.isConnected && node.open && fixture.querySelector(`[data-detail-key="${node.dataset.detailKey}"]`) === node));
+  check('focused command stays focused', document.activeElement === focused);
+  check('updated output is visible', original[2].querySelector('pre').textContent === 'changed');
+  for (let i=0;i<12;i++) syncHtml(fixture, html('changed').replace('正在处理', '进度 '+i));
+  check('unrelated turn updates keep the earlier turn intact', fixture.firstElementChild === oldTurn && original.every(node=>node.open));
+  syncHtml(fixture, '<section data-turn-id="older">更早的回合</section>'+html('changed').replace('正在处理', '进度 12'));
+  check('prepending history retains existing turn identity', fixture.children[1] === oldTurn && original.every(node=>node.open));
+  observer.disconnect();
+  syncHtml(fixture, '');
+  const parts = value => [
+    {key:'old',html:'<section data-turn-id="old"><details data-detail-key="history"><summary>旧记录</summary><input aria-label="草稿" value="initial"><p>历史正文</p></details></section>'},
+    {key:'live',html:`<section data-turn-id="live"><p>${value}</p></section>`}
+  ];
+  syncHtmlParts(fixture,parts('first'));
+  const oldPart=fixture.firstElementChild, detail=oldPart.querySelector('details'), input=oldPart.querySelector('input');
+  detail.open=true;input.value='未提交的编辑';input.focus();
+  const originalCreate=document.createElement.bind(document);let templates=0;
+  document.createElement=(...args)=>{if(args[0]==='template')templates++;return originalCreate(...args);};
+  try {
+    check('identical parts create no templates', !syncHtmlParts(fixture,parts('first')) && templates===0);
+    syncHtmlParts(fixture,parts('changed'));
+    check('only the changed part is parsed',templates===1);
+    check('unchanged part retains focus, typed text and disclosure',document.activeElement===input && input.value==='未提交的编辑' && detail.open);
+    const editedParts=parts('changed');editedParts[0].html=editedParts[0].html.replace('历史正文','更新正文');syncHtmlParts(fixture,editedParts);
+    check('changing the same part preserves focused edits and disclosure',document.activeElement===input && input.value==='未提交的编辑' && detail.open && oldPart.textContent.includes('更新正文'));
+    syncHtmlParts(fixture,[{key:'older',html:'<section>较早记录</section>'},...parts('changed')]);
+    check('part prepend keeps old nodes',fixture.children[1]===oldPart);
+    syncHtmlParts(fixture,[...parts('changed')].reverse());
+    check('part reorder and removal preserve kept nodes',fixture.children.length===2 && fixture.lastElementChild===oldPart);
+    syncHtml(fixture,html('legacy'));
+    syncHtmlParts(fixture,parts('restored'));
+    check('whole HTML and parts can alternate without stale output',fixture.children.length===2 && fixture.lastElementChild.textContent==='restored');
+    syncHtmlParts(fixture,[]);
+    check('empty parts remove stale history',fixture.childNodes.length===0);
+  } finally {document.createElement=originalCreate;}
+} catch(error) { results.push({label:error.message,passed:false}); }
+document.querySelector('#result').textContent = JSON.stringify({passed:results.every(item=>item.passed),results},null,2);
+</script></body></html>

@@ -1,0 +1,16 @@
+[
+  {
+    "name": "werift",
+    "version": "0.25.0",
+    "commit": "1874f39f31970613f1648a0a0a6f45bcbabdd4bf",
+    "url": "https://github.com/shinyoshiaki/werift-webrtc/blob/1874f39f31970613f1648a0a0a6f45bcbabdd4bf/LICENSE",
+    "sha256": "b83683f3f71b5971e6c2e33a8b894a49d752fd24c11b8ae08b53ca20f594fca5"
+  },
+  {
+    "name": "http_ece",
+    "version": "1.2.0",
+    "commit": "0562510a30819f52424724a6fd5504becacd98a1",
+    "url": "https://github.com/web-push-libs/encrypted-content-encoding/blob/0562510a30819f52424724a6fd5504becacd98a1/LICENSE",
+    "sha256": "717363ac0c7f0883042868db171cfed1f4b423119249eac9bce5131291017ea8"
+  }
+]

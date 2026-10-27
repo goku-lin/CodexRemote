@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>外部子代理 · Codex Relay</title><link rel="stylesheet" href="/agent-tasks.css"></head>
+<body>
+  <header class="page-head"><div class="brand"><span class="mark">C</span><div><h1>外部子代理</h1><p>此网页所在电脑 · Claude Code</p></div></div><nav><span id="connection" role="status">正在连接…</span><button id="refresh" type="button">刷新</button><a href="/">返回 Codex ↗</a></nav></header>
+  <main class="workspace">
+    <aside class="task-sidebar"><div class="list-head"><div><h2>任务记录</h2><span id="counts"></span></div><button id="new-task" class="primary" type="button">＋ 新任务</button></div><input id="search" type="search" placeholder="搜索任务、模型或会话 ID" aria-label="搜索子代理任务"><div class="filters" role="group" aria-label="任务筛选"><button data-filter="all" aria-pressed="true">全部</button><button data-filter="active" aria-pressed="false">执行中</button><button data-filter="ended" aria-pressed="false">已结束</button></div><div id="task-list" class="task-list"></div></aside>
+    <section id="detail" class="task-detail" aria-label="子代理任务详情">
+      <div id="empty" class="empty"><span class="empty-symbol">↗</span><h2>让执行过程看得见</h2><p>这里显示通过本机委派入口启动的 CC 任务。<br>选择一项任务，查看模型响应、工具操作和产物。</p></div>
+      <article id="task-content" hidden>
+        <div class="detail-heading"><div><div class="eyebrow">CLAUDE CODE <span>／</span> <span id="model-name"></span></div><h2 id="task-title"></h2></div><button id="stop-task" class="danger" type="button">■ 停止此任务</button></div>
+        <div id="run-banner" class="run-banner" role="status"><span id="phase" class="phase"></span><span id="run-message"></span></div>
+        <div class="metrics"><div><span>已运行</span><strong id="elapsed"></strong></div><div><span>最后模型响应</span><strong id="last-model"></strong></div><div><span>执行器</span><strong id="worker"></strong></div><div><span>工具调用记录</span><strong id="tool-count"></strong></div></div>
+        <div class="identifiers"><span>CC 会话 <code id="session-id"></code><button id="copy-session" class="text-button" type="button">复制</button></span><span>任务 <code id="run-id"></code></span><span>工作目录 <code id="cwd"></code></span><span id="source-thread"></span><span id="run-settings"></span></div>
+        <details class="task-prompt"><summary>交给 CC 的任务</summary><pre id="task-prompt"></pre></details>
+        <section id="artifacts-section" class="section" hidden><div class="section-heading"><h3>任务产物</h3><small>仅展示工作目录内的文件</small></div><div id="artifacts" class="artifact-list"></div><img id="artifact-preview" class="artifact-preview" alt="子代理生成的图片预览" hidden></section>
+        <section class="section conversation-section"><div class="conversation-head"><div><h3>对话与执行记录</h3><small id="event-note">显示任务消息、模型回复和工具结果</small></div><strong id="conversation-summary"></strong></div><div id="timeline" class="timeline"></div></section>
+        <form id="continue-form" class="continue-form"><label for="follow-up">继续这个 CC 会话</label><textarea id="follow-up" rows="3" placeholder="例如：保留构图，把背景改成晴天。" maxlength="200000" required></textarea><div><small id="continue-hint"></small><button id="continue-submit" class="primary" type="submit">发送给 CC →</button></div></form>
+      </article>
+      <div id="page-error" class="page-error" role="alert" hidden></div>
+    </section>
+  </main>
+  <dialog id="new-dialog"><form id="new-form"><div class="dialog-head"><h2>新建 CC 任务</h2><button id="close-dialog" type="button" aria-label="关闭">×</button></div><label>模型<select id="new-model" required></select></label><label>工作目录<input id="new-cwd" placeholder="例如 D:\MyProject" required></label><label>权限<select id="new-mode"><option value="review">只读分析</option><option value="implement">允许修改文件并运行命令</option></select></label><label>任务<textarea id="new-prompt" rows="5" maxlength="200000" placeholder="说明任务、允许修改的范围和验收要求。" required></textarea></label><p id="new-error" class="form-error" role="alert"></p><button id="new-submit" class="primary" type="submit">启动 CC →</button></form></dialog>
+  <script type="module" src="/agent-tasks.js"></script>
+</body></html>

@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {spawn} from 'node:child_process';
+import {createServer} from 'node:net';
+import {setTimeout as delay} from 'node:timers/promises';
+import {setMaintenancePassword} from '../src/maintenance-auth.mjs';
+import {jobPath} from '../src/maintenance.mjs';
+
+test('an isolated supervised service actually restarts, preserves its password and receipt, and does not replay the request',{skip:process.platform!=='win32',timeout:35000},async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'relay-maintenance-recovery-')),password='isolated-recovery-password';await setMaintenancePassword(dir,password);
+  const before=await fs.readFile(path.join(dir,'maintenance-password.json'),'utf8');
+  const reservation=createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+  assert.notEqual(port,4317);
+  const child=spawn(process.execPath,['start.mjs'],{cwd:new URL('..',import.meta.url),windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,HOST:'127.0.0.1',PORT:String(port),CODEX_RELAY_NO_EMBEDDED:'1',CODEX_RELAY_TOKEN:'isolated-restart',CODEX_RELAY_DATA_DIR:dir,CODEX_RELAY_PARENT_PIPE:'0'}});
+  let runner;const base='http://127.0.0.1:'+port;
+  t.after(async()=>{await runner?.body.cancel();if(child.exitCode===null){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;}await delay(500);assert.equal(path.dirname(dir),os.tmpdir());await fs.rm(dir,{recursive:true,force:true});});
+  const poll=async read=>{for(let i=0;i<150;i++){try{const value=await read();if(value)return value;}catch{}await delay(100);}throw new Error('isolated recovery timeout');};
+  await poll(async()=>{const r=await fetch(base+'/api/maintenance',{signal:AbortSignal.timeout(500)});return r.ok;});
+  const body={requestId:'isolated-restart-request',password,scope:'service'};
+  const response=await fetch(base+'/api/maintenance/restart',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  assert.equal(response.status,202);assert.equal((await response.json()).job.state,'queued');
+  const saved=JSON.parse(await fs.readFile(jobPath(dir,body.requestId),'utf8'));assert.notEqual(saved.plan.service.pid,process.pid);assert.notEqual(saved.plan.service.pid,child.pid);
+  await poll(async()=>JSON.parse(await fs.readFile(jobPath(dir,body.requestId),'utf8')).state==='waiting');
+  await poll(async()=>{const r=await fetch(base+'/api/maintenance',{signal:AbortSignal.timeout(500)});return r.ok;});
+  runner=await fetch(base+'/api/runner/local/commands',{headers:{'x-codex-relay-token':'isolated-restart'}});assert.equal(runner.status,200);
+  await poll(async()=>{const state=await(await fetch(base+'/api/maintenance?requestId='+body.requestId)).json();if(state.job?.state==='failed')throw new Error(state.job.error);return state.job?.state==='complete';});
+  const replay=await fetch(base+'/api/maintenance/restart',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const result=await replay.json();assert.equal(replay.status,202);assert.equal(result.duplicate,true);assert.equal(result.job.state,'complete');
+  assert.equal(await fs.readFile(path.join(dir,'maintenance-password.json'),'utf8'),before);
+});

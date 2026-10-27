@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay rendering benchmark</title><link rel="stylesheet" href="/styles.css">
+<style>body{display:block;height:auto;padding:20px;overflow:auto}#messages{height:420px;width:min(700px,100%)}#result{white-space:pre-wrap}button{padding:10px}</style>
+<button id="run">运行渲染测量</button><pre id="result">就绪</pre><div id="messages" class="messages"></div>
+<script type="module">
+const baseline=new URL(location.href).searchParams.get('baseline')==='1';
+const ui=await import('/app-profile.js'+(baseline ? '?baseline=1' : ''));
+const {syncHtml,syncHtmlParts}=await import(baseline ? '/baseline-dom-sync.js' : '/dom-sync.js');
+const sample=Array.from({length:12},(_,i)=>`## 操作 ${i}\n\n这是一段包含 **强调**、\`代码\` 和 [链接](https://example.com) 的历史回复，用于验证长对话中重复处理内容的开销。\n\n| 项目 | 状态 | 说明 |\n| --- | --- | --- |\n| 渲染 | 完成 | 内容保留 |\n| 网络 | 完成 | 按需更新 |\n\n\`\`\`js\nconst value = ${i};\nconsole.log(value);\n\`\`\`\n`).join('\n');
+const results=[];
+const median=values=>[...values].sort((a,b)=>a-b)[Math.floor(values.length/2)];
+const measure=async(count)=>{
+  const session={id:'profile-session',status:'running',turnCount:count+1,turns:[]};
+  const turns=Array.from({length:count},(_,i)=>({id:'old-'+i,turnId:'old-'+i,status:'completed',items:[{id:'u-'+i,type:'userMessage',text:'历史输入 '+i},{id:'a-'+i,type:'agentMessage',phase:'final_answer',text:sample+'\n独立历史回复 '+i}]}));
+  const live={id:'live',turnId:'live',status:'inProgress',items:[{id:'ul',type:'userMessage',text:'当前输入'},...Array.from({length:8},(_,i)=>({id:'note-'+i,type:'agentMessage',text:sample+'\n独立过程消息 '+i,at:i+1}))]};
+  ui.state.sessions=[session];ui.state.activeSessionId=session.id;
+  const host=document.querySelector('#messages'),timings={build:[],sync:[],viewport:[]};
+  syncHtml(host,'');
+  for(let i=0;i<35;i++){
+    live.items.at(-1).text=sample+'\n更新 '+i;
+    let t=performance.now();const snapshot=ui.timelineViewport.capture(host,session.id,'ul');let viewport=performance.now()-t;
+    t=performance.now();const rows=[...turns,live].map(ui.renderTurn);const build=performance.now()-t;
+    t=performance.now();
+    if(!baseline)syncHtmlParts(host,rows.map((html,index)=>({key: index,html})));else syncHtml(host,rows.join(''));
+    const sync=performance.now()-t;t=performance.now();ui.timelineViewport.restore(host,snapshot);viewport+=performance.now()-t;
+    if(i>=5){timings.build.push(build);timings.sync.push(sync);timings.viewport.push(viewport);}
+    await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  return {completedTurns:count,textChars:(count+8)*sample.length,medianMs:Object.fromEntries(Object.entries(timings).map(([key,values])=>[key,Number(median(values).toFixed(2))])),totalMedianMs:Number(median(timings.build.map((v,i)=>v+timings.sync[i]+timings.viewport[i])).toFixed(2))};
+};
+document.querySelector('#run').onclick=async()=>{
+  document.querySelector('#run').disabled=true;document.querySelector('#result').textContent='测量中';
+  try{results.length=0;for(const count of [5,50])results.push(await measure(count));document.querySelector('#result').textContent=JSON.stringify({baseline,results},null,2);}
+  catch(error){document.querySelector('#result').textContent=error.stack;}finally{document.querySelector('#run').disabled=false;}
+};
+</script></html>

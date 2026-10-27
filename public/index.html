@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <title>Codex Relay</title>
+  <meta name="theme-color" content="#171819" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/app-icon-192.png" />
+  <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="modulepreload" href="/app.js" />
+  <link rel="modulepreload" href="/dom-sync.js" />
+  <link rel="modulepreload" href="/composer-settings.js" />
+  <link rel="modulepreload" href="/runtime-status.js" />
+  <link rel="modulepreload" href="/access.js" />
+  <link rel="modulepreload" href="/questions.js" />
+  <link rel="modulepreload" href="/reliability.js" />
+  <link rel="modulepreload" href="/session-status.js" />
+  <link rel="modulepreload" href="/usage.js" />
+  <link rel="modulepreload" href="/timeline-scroll.js" />
+  <link rel="modulepreload" href="/chatgpt-mode.js" />
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="mark">C</span><div class="product-switcher"><button class="product-switcher-trigger" id="productSwitcherBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="productSwitcherMenu"><strong id="productModeLabel">Codex</strong><span aria-hidden="true">⌄</span></button><div class="product-switcher-menu hidden" id="productSwitcherMenu" role="menu" aria-label="选择产品"><button type="button" role="menuitemradio" aria-checked="false" data-product-mode="chatgpt"><strong>ChatGPT</strong><small>创建、学习和探索</small></button><button type="button" role="menuitemradio" aria-checked="true" data-product-mode="codex"><strong>Codex</strong><small>构建、调试和发布</small></button></div></div><button class="pane-toggle" id="hideSidebarBtn" type="button" aria-label="隐藏左侧栏" title="隐藏左侧栏">‹</button></div>
+      <section class="chatgpt-sidebar" id="chatgptSidebar" aria-label="ChatGPT 对话列表"><div class="chatgpt-view-heading"><div><strong>ChatGPT</strong><small>通过 Codex 桌面连接</small></div><button class="link-btn" id="refreshChatgptBtn" type="button">刷新</button></div><a class="chatgpt-web-link" href="/remote-browser.html" target="_blank" rel="noopener">打开完整 ChatGPT 网页</a><div class="chatgpt-availability muted" id="chatgptAvailability" role="status"></div><div class="chatgpt-thread-list" id="chatgptThreadList"></div></section>
+      <button class="new-task" id="newTaskBtn">＋ 新建远程任务</button>
+      <a class="external-agents-link" href="/agent-tasks.html" target="_blank" rel="noopener">↗ 外部子代理 <span>CC · DeepSeek</span></a>
+      <div class="session-search-tools" aria-label="查找对话">
+        <div class="session-search-field"><input id="sessionSearch" type="search" maxlength="160" placeholder="搜索标题或项目" aria-label="搜索对话标题或项目" autocomplete="off" spellcheck="false"><button id="resetSessionSearch" class="link-btn hidden" type="button" title="清除搜索与筛选" aria-label="清除搜索与筛选">重置</button><button id="noticeSettingsBtn" class="notice-settings-trigger" type="button" title="提醒设置" aria-label="提醒设置" aria-expanded="false" aria-controls="noticeSettings">⚙</button></div>
+        <div class="session-filters" role="group" aria-label="对话筛选与处理"><button type="button" data-session-filter="all" aria-pressed="true">全部</button><button type="button" data-session-filter="running" aria-pressed="false">运行中</button><button id="attentionBtn" type="button" data-session-filter="waiting" aria-pressed="false" title="查看未读回复、待回答和待审批对话">待处理 <b class="filter-count" id="attentionCount" hidden>0</b></button><button id="nextPendingSidebar" class="next-pending-action" type="button" aria-label="打开下一个待处理对话" title="打开下一个待处理对话" disabled>下一个处理 <span aria-hidden="true">→</span></button></div>
+      </div>
+      <div id="noticeSettings" class="notice-settings hidden"><label><input id="noticeSound" type="checkbox">提示音</label><button id="enableNotifications" class="link-btn" type="button">开启系统通知</button><span id="notificationHint" class="muted"></span><div class="background-notifications"><button id="enableBackgroundNotifications" class="link-btn" type="button">开启后台提醒</button><button id="testBackgroundNotification" class="link-btn" type="button" disabled>10 秒后测试</button><span id="backgroundNotificationHint" class="muted" role="status"></span></div></div>
+      <div class="nav-label row-label" id="projectNav"><span>项目与对话</span><button class="link-btn" id="manageProjectsBtn" type="button">管理</button></div>
+      <div id="projectList" class="project-list"></div>
+      <div class="nav-label row-label conversation-label hidden" id="conversationNav"><span id="conversationListTitle">最近对话</span><span class="muted" id="conversationScope" role="status" aria-live="polite"></span></div>
+      <div id="sessionList" class="session-list"></div>
+      <div class="sidebar-footer"><div class="online"><i class="dot" id="sidebarDot"></i><span id="sidebarRunner">等待 Runner 连接</span><button class="link-btn" id="syncBtn" type="button" title="同步项目和对话">同步</button></div><span class="connection-note" id="connectionNote">控制服务连接中…</span><div class="sidebar-settings"><button class="link-btn" id="deviceSettingsBtn" type="button">设备</button><button class="link-btn" id="performanceSettingsBtn" type="button" aria-haspopup="dialog" aria-controls="performanceSettingsModal">性能设置</button><button class="link-btn" id="healthOpenBtn" type="button">连接检查</button></div><button class="usage-history-open" id="historyUsageOpenBtn" type="button" aria-haspopup="dialog" aria-controls="historyUsageModal" title="查看历史累计 token 和各模型用量"><span id="usageTokenSummary">累计 — token</span><span aria-hidden="true">›</span></button><button class="link-btn" id="installAppBtn" type="button" aria-haspopup="dialog" aria-controls="installModal">添加到手机桌面</button><button class="link-btn app-update-check" id="checkAppUpdateBtn" type="button" title="检查网页界面更新，不重启 Codex 或后台">检查更新</button><small id="appUpdateStatus" class="app-update-status" role="status" aria-live="polite" hidden></small><button class="link-btn phone-connect hidden" id="phoneConnectBtn" type="button">连接手机</button></div>
+    </aside>
+    <div class="resize-handle left-resize" id="leftResize" role="separator" aria-label="调整左侧栏宽度" tabindex="0"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-leading"><button class="pane-reveal" id="showSidebarBtn" type="button" aria-label="显示左侧栏" title="显示左侧栏"><span aria-hidden="true">☰</span><b class="sidebar-pending-count" id="sidebarPendingCount" aria-hidden="true" hidden>0</b></button><div class="crumbs"><span class="repo-icon">⌘</span><strong id="repoName">Codex Relay</strong><span>/</span><span id="sessionTitle">选择或新建任务</span></div></div>
+        <div class="top-actions"><button class="top-usage" id="usageOpenBtn" type="button" aria-haspopup="dialog" aria-controls="usageModal" title="查看额度与重置时间"><span id="usageQuotaSummary">额度</span></button><div id="statusPill" class="status-pill"><i class="dot"></i><span>未连接</span></div><button class="stop-task" id="interruptBtn" disabled title="中断当前任务" aria-label="中断当前任务">■</button><button class="pane-reveal" id="showInspectorBtn" type="button" aria-label="显示右侧栏" title="显示右侧栏">▤</button><button class="pane-toggle top-toggle" id="hideInspectorBtn" type="button" aria-label="隐藏右侧栏" title="隐藏右侧栏">›</button></div>
+      </header>
+      <section class="conversation">
+        <div id="connectionBanner" class="connection-banner hidden" role="status"></div>
+        <div class="session-runtime hidden" id="sessionRuntime" aria-label="Codex 当前状态和设置"><span class="session-runtime-status" id="sessionRuntimeStatus"></span><span class="session-runtime-model" id="sessionRuntimeModel"></span></div>
+        <div class="pending-navigation hidden" id="pendingNavigation"><span id="pendingNavigationStatus" role="status" aria-live="polite"></span><div><button class="pending-next" id="nextPendingBtn" type="button">下一个处理 →</button><button class="link-btn hidden" id="exitPendingModeBtn" type="button" aria-label="结束处理巡览">结束巡览</button></div></div>
+        <div class="messages" id="messages"><div class="system-row">还没有任务。点击左侧“新建远程任务”开始。</div></div>
+        <div id="approvalSlot"></div>
+        <div id="queuedInputs" class="queued-inputs hidden" aria-label="待发送消息"></div>
+        <details class="goal-strip hidden" id="goalStrip"><summary aria-label="展开或收起对话目标"><span aria-hidden="true">◎</span><span id="goalStripStatus"></span><span id="goalStripObjective"></span><span id="goalStripTime" title="桌面记录的目标累计用时"></span><span class="disclosure-arrow" aria-hidden="true">›</span></summary><div class="goal-strip-body"><p id="goalStripDetail"></p><div class="goal-strip-footer"><span id="goalStripUsage"></span><button class="link-btn" id="goalStripManage" type="button" aria-haspopup="dialog">管理目标</button></div><small id="goalStripNotice" class="muted"></small></div></details>
+        <div class="composer" id="composer">
+          <div class="attachment-tray" id="attachmentTray"></div>
+          <div class="context-chips" id="contextChips" aria-label="下一条消息的技能和引用"></div>
+          <div class="composer-size-row"><div class="latest-navigation"><button id="jumpLatestBtn" type="button" title="回到最新" aria-label="回到最新" hidden>回到最新 ↓</button></div><button id="expandComposerBtn" type="button" aria-expanded="false" aria-controls="promptInput" aria-label="展开输入框" title="展开输入框"><span class="composer-expand-icon" aria-hidden="true">⤢</span><span class="composer-expand-label">展开输入框</span></button></div>
+          <textarea id="promptInput" rows="2" placeholder="与 Codex 协作" autocomplete="off"></textarea>
+          <div class="composer-toolbar">
+            <button class="attach-btn" id="attachBtn" type="button" aria-label="添加图片" title="添加图片，也可粘贴或拖入">＋</button>
+            <button class="composer-more" id="composerMoreBtn" type="button" aria-label="更多输入工具：技能、目标、权限" title="技能、目标与权限" aria-expanded="false" aria-controls="composerTools">⋯</button>
+            <div class="composer-tools" id="composerTools">
+            <button class="composer-context-btn" id="contextToolsBtn" type="button" aria-haspopup="dialog" title="选择技能、引用对话、文件或应用">Skill / @</button>
+            <button class="composer-context-btn" id="goalToolsBtn" type="button" aria-haspopup="dialog">目标</button>
+            <div class="composer-control permission-control">
+              <button class="permission-trigger" id="permissionBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="permissionMenu"><svg width="16" height="18" viewBox="0 0 18 20" fill="none" aria-hidden="true"><path d="M9 1.5 16 4v6c0 4-3 6.5-7 8.5C5 16.5 2 14 2 10V4L9 1.5Z" stroke="currentColor" stroke-width="1.5"/><path d="M9 5.5v5M9 13v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span id="permissionLabel">沿用当前权限</span><span class="control-chevron" aria-hidden="true">⌄</span></button>
+              <div class="permission-menu composer-popover hidden" id="permissionMenu" role="menu" aria-label="选择权限"></div>
+            </div>
+            </div>
+            <div class="composer-spacer"></div>
+            <div class="composer-metrics"><button class="composer-rate usage-trigger" id="usageSpeedSummary" type="button" aria-haspopup="dialog" aria-controls="usageModal" aria-label="查看速度说明">任务均速 —</button><button class="composer-activity usage-trigger" id="composerActivity" type="button" aria-haspopup="dialog" aria-controls="usageModal" aria-label="查看额度和上下文用量">上下文 —</button></div>
+            <div class="composer-control model-control">
+              <button class="model-trigger" id="modelBtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPopover"><span id="modelTriggerLabel">选择模型</span><span class="fast-indicator hidden" id="fastIndicator" aria-label="Fast 模式">⚡</span><span class="control-chevron" aria-hidden="true">⌄</span></button>
+              <div class="model-popover composer-popover hidden" id="modelPopover" role="dialog" aria-label="模型和推理强度">
+                <div id="strengthPanel">
+                  <button class="fast-toggle" id="fastModeBtn" type="button" aria-label="Fast 模式" aria-pressed="false" aria-describedby="fastModeHint"><svg width="18" height="20" viewBox="0 0 20 22" fill="none" aria-hidden="true"><path d="m11.5 1-9 12h7L8.5 21l9-12h-7l1-8Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+                  <span class="fast-mode-hint" id="fastModeHint" role="tooltip"></span>
+                  <button class="settings-reset" id="resetModelBtn" type="button" aria-label="恢复当前模型和默认强度" title="恢复当前模型和默认强度">↶</button>
+                  <strong class="strength-title" id="strengthLabel"></strong>
+                  <button class="model-name" id="modelListBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelOptions"><span id="modelLabel"></span><span aria-hidden="true">›</span></button>
+                  <div class="effort-slider"><div class="effort-dots" id="effortDots" aria-hidden="true"></div><input id="effortSlider" type="range" min="0" max="5" step="1" aria-label="推理强度"></div>
+                  <small class="fast-native-note hidden" id="fastNativeNote">恢复桌面原生连接后可切换 Fast</small>
+                </div>
+                  <div class="hidden" id="modelPanel"><div class="model-panel-head"><button class="model-back" id="modelBackBtn" type="button">‹ 模型与强度</button><button class="link-btn" id="manageModelsBtn" type="button">管理可选模型</button></div><div id="modelOptions" class="model-options" role="menu" aria-label="选择模型"></div></div>
+              </div>
+            </div>
+            <button class="send-btn" id="sendBtn" aria-label="发送消息" title="发送">↑</button>
+          </div>
+          <select id="permissionSelect" hidden></select><select id="modelSelect" hidden></select><select id="effortSelect" hidden></select>
+          <div id="sendStatus" class="send-status" role="status"></div><div id="sendStatusActions" class="send-status-actions hidden"><button id="checkSendBtn" class="link-btn" type="button">重新检查</button><button id="releaseSendBtn" class="link-btn hidden" type="button">我已核对未发送，允许重试</button></div><div id="composeError" class="compose-error" role="status"></div><input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+        </div>
+      </section>
+      <section class="chatgpt-view hidden" id="chatgptView" aria-label="ChatGPT 对话">
+        <section class="chatgpt-conversation">
+          <header class="chatgpt-conversation-heading"><div><strong id="chatgptConversationTitle">选择一个 ChatGPT 对话</strong><small id="chatgptConversationStatus"></small></div></header>
+          <div class="chatgpt-messages" id="chatgptMessages"><div class="chatgpt-empty">从左侧选择一个 ChatGPT 对话。</div></div>
+          <form class="chatgpt-composer" id="chatgptComposer"><textarea id="chatgptPromptInput" rows="2" placeholder="和 ChatGPT 对话…" autocomplete="off"></textarea><button class="btn primary" id="chatgptSendBtn" type="submit">发送</button></form>
+          <p class="chatgpt-error" id="chatgptError" role="status"></p>
+        </section>
+      </section>
+    </main>
+    <div class="resize-handle right-resize" id="rightResize" role="separator" aria-label="调整右侧栏宽度" tabindex="0"></div>
+
+    <aside class="inspector" id="inspector">
+      <section class="inspector-section"><div class="inspector-heading"><h2>任务上下文</h2><button class="pane-toggle" id="inspectorSectionToggle" type="button" aria-label="折叠任务上下文">−</button></div><div class="kv"><div class="kv-row"><span>设备</span><strong id="contextDevice">—</strong></div><div class="kv-row"><span>工作目录</span><strong id="contextCwd">—</strong></div><div class="kv-row"><span>模型</span><strong id="contextModel">—</strong></div><div class="kv-row"><span>线程</span><strong id="contextThread">—</strong></div></div></section>
+      <section class="inspector-section"><h2>计划</h2><div id="planList" class="plan-list"><div class="muted">等待 Codex 提供计划</div></div></section>
+      <section class="inspector-section"><h2>变更文件</h2><div id="fileList"><div class="muted">尚未收到文件变更</div></div><button class="btn" id="diffBtn" style="width:100%;margin-top:7px" disabled>查看完整 diff</button></section>
+      <section class="inspector-section"><h2>检查</h2><div id="checks"><div class="check pending"><i>•</i><span>等待任务开始</span></div></div></section>
+      <p class="prototype-note">本地 Runner 运行 Codex app-server，并把 JSON-RPC 事件转成浏览器可审阅的对话流。远程设备通过出站 SSE 连接加入。</p>
+    </aside>
+  </div>
+  <div id="taskNotices" class="task-notices" aria-live="polite" aria-label="任务提醒"></div>
+  <button class="mobile-nav-backdrop hidden" id="mobileNavBackdrop" type="button" aria-label="关闭项目和对话列表"></button>
+  <div class="modal hidden" id="healthModal" role="dialog" aria-modal="true" aria-labelledby="healthTitle"><div class="modal-card"><div class="modal-head"><h2 id="healthTitle">连接检查</h2><button class="link-btn" id="healthCloseBtn" type="button" aria-label="关闭连接检查">关闭</button></div><div id="healthContent"></div><section class="network-check" aria-labelledby="ownershipTitle"><strong id="ownershipTitle">当前对话占用</strong><div class="action-row"><button class="btn" id="ownershipCheckBtn" type="button">检查占用</button><button class="btn" id="ownershipReleaseBtn" type="button" hidden>释放空闲占用</button></div><p class="muted" id="ownershipResult" role="status" aria-live="polite"></p></section><section class="network-check" id="networkCheckPanel" aria-labelledby="networkCheckTitle" hidden><strong id="networkCheckTitle">网速检测</strong><p class="muted">检测当前浏览器与服务端之间的链路，含网络等待。每次约 0.5 MB，平时不检测。小流量短测结果仅供参考，不代表宽带最高网速。</p><div class="action-row"><button class="btn" id="networkCheckBtn" type="button">检测一次</button><button class="btn" id="networkCheckCancelBtn" type="button" hidden>停止</button></div><p id="networkCheckResult" role="status" aria-live="polite">尚未检测</p></section><p class="compose-error" id="healthError" role="status"></p><div class="action-row"><button class="btn" id="healthRefreshBtn" type="button">刷新状态</button><button class="btn primary" id="healthRecoverBtn" type="button">恢复连接</button><button class="btn" id="healthRestartBtn" type="button">重启与恢复</button></div></div></div>
+  <div class="modal pairing-gate hidden" id="pairingGate" role="dialog" aria-modal="true" aria-labelledby="pairingTitle">
+    <form class="modal-card" id="pairingForm"><div class="modal-head"><h2 id="pairingTitle">连接到电脑</h2></div>
+      <p class="muted">在电脑本机的 Relay 左下角点击“连接手机”，取得配对码。首次授权后，此浏览器可以记住连接 14 天。</p>
+      <label class="field-label" for="pairingCodeInput">8 位配对码<input id="pairingCodeInput" type="text" inputmode="numeric" pattern="[0-9 ]{8,9}" maxlength="9" autocomplete="one-time-code" required placeholder="0000 0000"></label>
+      <label class="field-label" for="pairingComputerName">Codex 电脑名称（可选）<input id="pairingComputerName" type="text" maxlength="80" autocomplete="off" placeholder="例如：家里电脑、办公室电脑"></label>
+      <details><summary class="muted">浏览器授权备注（可选）</summary><label class="field-label" for="pairingDeviceName">手机或浏览器备注<input id="pairingDeviceName" type="text" maxlength="80" autocomplete="off" placeholder="例如：我的手机"></label></details>
+      <button class="btn primary pairing-submit" id="pairingSubmitBtn" type="submit">连接</button><button class="link-btn" id="pairingComputerEntriesBtn" type="button">选择其他电脑入口</button><div class="modal-error" id="pairingError" role="alert"></div>
+    </form>
+  </div>
+  <div class="modal hidden" id="phoneModal" role="dialog" aria-modal="true" aria-labelledby="phoneTitle">
+    <div class="modal-card access-card"><div class="modal-head"><h2 id="phoneTitle">连接与设备管理</h2><button class="icon-btn" id="closePhoneBtn" type="button" aria-label="关闭手机连接">×</button></div>
+      <p class="muted" id="phoneInstructions">连接同一 Wi-Fi，在手机浏览器打开下面的地址，再输入配对码。</p>
+      <label class="field-label" for="phoneAddress"><span id="phoneAddressLabel">手机访问地址</span><input id="phoneAddress" type="text" readonly></label>
+      <div class="field-label hidden" id="privateAddressField"><label for="privateAddress">Tailscale 私有地址（已安装的设备）</label><div class="access-address"><input id="privateAddress" type="text" readonly><button class="btn" id="copyPrivateAddressBtn" type="button">复制</button></div></div>
+      <div class="phone-code" id="phoneCode"></div><p class="muted" id="phoneExpiry"></p>
+      <div class="modal-actions"><button class="btn" id="refreshPhoneBtn" type="button">更换配对码</button><button class="btn primary" id="copyPhoneAddressBtn" type="button">复制地址</button></div>
+      <section class="browser-devices"><div class="access-section-head"><h3>局域网访问</h3><button class="btn" id="toggleLanBtn" type="button">开启局域网</button></div><p class="muted" id="lanStatus"></p><div class="field-label hidden" id="lanAddressField"><label for="lanAddress">同一 Wi-Fi 地址</label><div class="access-address"><input id="lanAddress" type="text" readonly><button class="btn" id="copyLanAddressBtn" type="button">复制</button></div></div></section>
+      <section class="browser-devices"><div class="access-section-head"><h3>已配对的浏览器</h3><button class="btn" id="refreshBrowserDevicesBtn" type="button">刷新列表</button></div>
+        <p class="muted">撤销后立即断开实时连接，需要新的配对码才能再次访问。同一设备的不同浏览器分别授权。</p>
+        <div id="browserDeviceList"></div><button class="btn danger" id="revokeAllDevicesBtn" type="button">撤销全部设备并作废当前配对码</button>
+      </section>
+      <div class="modal-error" id="phoneError" role="alert"></div>
+    </div>
+  </div>
+  <div class="modal hidden" id="projectModal" role="dialog" aria-modal="true" aria-labelledby="projectModalTitle"><div class="modal-card project-management-card"><div class="modal-head"><h2 id="projectModalTitle">管理项目</h2><button class="icon-btn" id="closeProjectsBtn" aria-label="关闭项目管理">×</button></div><p class="muted" id="projectSortHint">勾选显示项目，拖动右侧手柄排序；手机长按手柄后拖动，键盘可用上下方向键。点击保存后生效。</p><div id="projectChoices" class="project-choices" role="list" aria-label="项目显示和排序"></div><p id="projectSortStatus" class="project-sort-status" role="status" aria-live="polite"></p><div class="modal-actions"><button class="btn" id="cancelProjectsBtn">取消</button><button class="btn primary" id="saveProjectsBtn">保存</button></div><div id="projectError" class="modal-error"></div></div></div>
+  <div class="modal hidden" id="deviceSettingsModal" role="dialog" aria-modal="true" aria-labelledby="deviceSettingsTitle"><form class="modal-card" id="deviceSettingsForm"><div class="modal-head"><h2 id="deviceSettingsTitle">Codex 电脑</h2><button class="icon-btn" id="closeDeviceSettingsBtn" type="button" aria-label="关闭设备设置">×</button></div><label class="field-label" for="computerNameInput">电脑名称<input id="computerNameInput" maxlength="80" required placeholder="例如：家里电脑、办公室电脑" autocomplete="off"></label><p class="muted">名称保存后，各浏览器连接这台电脑时都会显示。</p><div class="computer-icon-field" id="computerIconField"><label class="field-label" for="computerIconTheme">手机桌面图标<select id="computerIconTheme"><option value="auto">自动识别</option></select></label><img id="computerIconPreview" src="/app-icon-desktop-icon.svg" alt="当前应用图标预览" width="72" height="72"><small id="computerIconHelp" class="muted"></small></div><p class="muted" id="computerIdentity"></p><div class="modal-actions"><button class="btn" id="cancelDeviceSettingsBtn" type="button">取消</button><button class="btn primary" id="saveDeviceSettingsBtn" type="submit">保存设置</button></div><div class="modal-error" id="deviceSettingsError" role="status"></div><details class="device-more-options"><summary>更多连接选项</summary><div class="action-row"><button class="btn" id="computerEntriesBtn" type="button">电脑入口</button><button class="btn" id="addComputerBtn" type="button">安装其他电脑</button></div></details></form></div>
+  <div class="modal hidden" id="usageModal" role="dialog" aria-modal="true" aria-labelledby="usageTitle"><div class="modal-card usage-card"><div class="modal-head"><h2 id="usageTitle">额度与上下文用量</h2><button class="icon-btn" id="closeUsageBtn" type="button" aria-label="关闭用量面板">×</button></div><div id="usageContent"></div><div class="modal-actions"><button class="btn" id="refreshUsageBtn" type="button">刷新用量</button></div><div class="modal-error" id="usageError" role="status"></div></div></div>
+  <div class="modal hidden" id="historyUsageModal" role="dialog" aria-modal="true" aria-labelledby="historyUsageTitle"><div class="modal-card usage-card history-usage-card"><div class="modal-head"><h2 id="historyUsageTitle">历史 token 用量</h2><button class="icon-btn" id="closeHistoryUsageBtn" type="button" aria-label="关闭历史用量">×</button></div><form id="historyUsageFilters" class="usage-filters" novalidate><label class="field-label" for="historyUsagePreset">统计时间<select id="historyUsagePreset"><option value="month" selected>最近一个月（30 天）</option><option value="week">最近一周（7 天）</option><option value="today">今日</option><option value="all">全部历史</option><option value="custom">自定义时间</option></select></label><div id="historyUsageCustom" class="usage-custom-range" hidden><label class="field-label" for="historyUsageStart">开始日期<input id="historyUsageStart" type="date" min="1971-01-01" required></label><label class="field-label" for="historyUsageEnd">结束日期<input id="historyUsageEnd" type="date" min="1971-01-01" required></label><button class="btn" type="submit">应用</button></div><p id="historyUsageRangeError" class="compose-error" role="alert"></p></form><div id="historyUsageContent"></div><div class="modal-actions"><button class="btn" id="refreshHistoryUsageBtn" type="button">刷新历史统计</button></div></div></div>
+
+  <div class="modal hidden" id="newTaskModal" role="dialog" aria-modal="true" aria-labelledby="newTaskTitle">
+    <div class="modal-card"><div class="modal-head"><h2 id="newTaskTitle">新建远程任务</h2><button class="icon-btn" id="closeModalBtn" aria-label="关闭">×</button></div><label class="field-label">目标设备<select id="newTaskDevice"></select></label><label class="field-label">项目<select id="newTaskProject"></select></label><p class="project-directory" id="newTaskDirectory"></p><label class="field-label">执行方式<select id="newTaskExecutionMode"><option value="desktop">与 Codex 桌面共用（推荐）</option><option value="runner">独立执行（可能占用对话）</option></select></label><p class="muted" id="newTaskExecutionHint"></p><label class="field-label">任务目标<textarea id="newTaskPrompt" rows="4" placeholder="与 Codex 协作，描述你要完成的任务"></textarea></label><div class="new-task-options"><label class="field-label">模型<select id="newModelSelect"></select></label><label class="field-label">推理强度<select id="newEffortSelect"></select></label><label class="field-label">权限<select id="newPermissionSelect"></select></label></div><div class="modal-actions"><button class="btn" id="cancelTaskBtn">取消</button><button class="btn primary" id="createTaskBtn">创建并开始</button></div><div class="modal-error" id="modalError"></div></div>
+  </div>
+  <div class="modal hidden" id="modelManagementModal" role="dialog" aria-modal="true" aria-labelledby="modelManagementTitle"><div class="modal-card"><div class="modal-head"><h2 id="modelManagementTitle">可选模型</h2><button class="icon-btn" id="closeModelManagementBtn" type="button" aria-label="关闭模型管理">×</button></div><p class="muted">只显示勾选的模型，手机和电脑共用这份设置。正在运行的对话仍沿用原模型。</p><div id="modelChoices" class="project-choices"></div><div class="modal-actions"><button class="btn" id="refreshModelsBtn" type="button">刷新模型列表</button><button class="btn" id="cancelModelsBtn" type="button">取消</button><button class="btn primary" id="saveModelsBtn" type="button">保存</button></div><div id="modelManagementError" class="modal-error" role="status"></div></div></div>
+  <div class="modal hidden computer-entries-modal" id="computerEntriesModal" role="dialog" aria-modal="true" aria-labelledby="computerEntriesTitle"><div class="modal-card">
+    <div class="modal-head"><h2 id="computerEntriesTitle">独立电脑入口</h2><button class="icon-btn" id="computerEntriesClose" type="button" aria-label="关闭电脑入口">×</button></div>
+    <p>各电脑独立运行并单独配对。选择入口会直接打开那台电脑，当前草稿保留在此浏览器。</p>
+    <p class="muted">同一局域网使用那台电脑的局域网地址；外网使用它自己的 HTTPS 地址。入口名单只保存在浏览器，不含配对凭据。</p>
+    <div id="computerEntriesImport" class="hidden"><p>收到以下入口，请核对名称和完整地址后保存：</p><div id="computerEntriesImportList"></div><div class="action-row"><button class="btn primary" id="acceptComputerEntries" type="button">保存这些入口</button><button class="btn" id="discardComputerEntries" type="button">忽略</button></div></div>
+    <div id="computerEntryList"></div><p class="muted" id="computerEntriesEmpty">尚未保存入口。</p>
+    <form id="computerEntriesForm"><label class="field-label">电脑名称<input id="computerEntryName" maxlength="80" required placeholder="例如：个人笔记本"></label><label class="field-label">访问地址<input id="computerEntryUrl" type="url" required placeholder="http://192.168.1.20:4317/"></label><div class="modal-actions"><button class="btn" id="saveCurrentComputer" type="button">填入当前地址</button><button class="btn primary" type="submit">保存入口</button></div></form>
+    <div class="modal-actions"><button class="btn" id="downloadComputerEntries" type="button">下载入口页</button></div><p class="muted">将入口页或各电脑地址保存好；上次访问的电脑关机后，仍可从入口页选择另一台。</p>
+    <div class="modal-error" id="computerEntriesError" role="status"></div>
+  </div></div>
+  <script type="module" src="/app.js"></script>
+  <div class="modal hidden" id="connectorModal" role="dialog" aria-modal="true" aria-labelledby="connectorTitle"><div class="modal-card"><div class="modal-head"><h2 id="connectorTitle">安装其他 Windows 电脑</h2><button class="icon-btn" id="connectorCloseBtn" type="button" aria-label="关闭添加电脑">×</button></div>
+    <p>在需要执行任务的电脑安装并登录 Codex，再运行完整的 EXE 安装器。已有安装会修复管理入口，并保留配置、授权和正在运行的任务。</p>
+    <p class="muted">安装完成后使用桌面“Codex远程”图标。两台电脑使用同一套 EXE 管理程序，启动、更新和恢复都在窗口内完成。</p>
+    <p class="muted">电脑名称可在“设备”中修改；在网页“连接手机”中查看该电脑的地址与配对码。后台代码更新时仍会保护正在执行的任务。</p>
+    <div class="modal-actions"><button class="btn" id="connectorRefreshBtn" type="button">刷新</button><a class="btn primary" id="connectorDownload" href="/codexremote-setup.exe" download>下载 Windows 安装器（EXE）</a></div>
+    <details id="legacyConnectorControls"><summary>原主电脑中转模式（可选）</summary><p class="muted">此模式仍依赖这台电脑在线。安装时输入 2，并使用下面的网址和一次性电脑连接码。</p><div class="connector-address" id="connectorUrl"></div><div class="connector-code-row"><strong id="connectorCode">尚未生成</strong><button class="btn" id="connectorCodeBtn" type="button">生成连接码</button></div><p class="muted" id="connectorAccessNote"></p><div id="connectorComputers"></div></details>
+    <div class="modal-error" id="connectorError" role="status"></div>
+  </div></div>
+  <div class="modal hidden" id="performanceSettingsModal" role="dialog" aria-modal="true" aria-labelledby="performanceSettingsTitle">
+    <form class="modal-card performance-settings-card" id="performanceSettingsForm">
+      <div class="modal-head"><h2 id="performanceSettingsTitle">性能与加载</h2><button class="icon-btn" id="closePerformanceSettingsBtn" type="button" aria-label="关闭性能设置">×</button></div>
+      <p class="muted" id="performanceComputer"></p>
+      <label class="performance-toggle"><input id="preloadEnabled" type="checkbox">提前加载最近的对话</label>
+      <p class="muted performance-help">开启后，切换常聊的对话更快；关闭后，不再提前加载其他对话，已缓存内容与运行中任务仍正常同步。</p>
+      <fieldset id="preloadOptions" class="performance-options">
+        <label class="field-label" for="preloadCount">预加载对话数<input id="preloadCount" type="number" min="1" max="20" step="1" required inputmode="numeric"><span class="muted">1–20 个，包含正在查看的对话；所有项目合计。</span></label>
+        <label class="field-label" for="preloadScope">预加载范围<select id="preloadScope"><option value="all">所有已显示项目</option><option value="project">仅当前项目</option></select></label>
+      </fieldset>
+      <label class="field-label" for="historyTurns">每个对话首次加载的回合数<input id="historyTurns" type="number" min="1" max="20" step="1" required inputmode="numeric"><span class="muted">1–20 回合，也用于预加载。仍可在对话里展开更多；手动展开的历史保持原样。</span></label>
+      <p class="muted performance-help">数量越多，切换更方便，但会增加流量和内存占用。图片保持默认收起，音视频按需加载。</p>
+      <div class="modal-actions"><button class="btn" id="resetPerformanceSettingsBtn" type="button">恢复默认</button><button class="btn" id="cancelPerformanceSettingsBtn" type="button">取消</button><button class="btn primary" id="savePerformanceSettingsBtn" type="submit">保存</button></div>
+      <div class="modal-error" id="performanceSettingsError" role="status" aria-live="polite"></div>
+    </form>
+  </div>
+  <div class="modal hidden" id="installModal" role="dialog" aria-modal="true" aria-labelledby="installTitle"><div class="modal-card">
+    <div class="modal-head"><h2 id="installTitle">手机应用与快速恢复</h2><button id="closeInstallBtn" class="icon-btn" type="button" aria-label="关闭">×</button></div>
+    <p>支持的浏览器可安装为独立应用，减少地址栏和底部工具栏占用。</p><p>鸿蒙／华为浏览器：打开浏览器菜单，选择“添加至桌面”。如果仍显示浏览器栏，说明当前入口只创建了快捷方式，可试用下方“全屏显示”。实际支持以手机为准。</p>
+    <p>iPhone：在 Safari 分享菜单选择“添加到主屏幕”，以网页应用方式打开。</p>
+    <p>有两台电脑时，分别在手机浏览器打开它们各自的地址，再各安装一次。先在「左侧栏 → 设备」将电脑命名为“台式机”“笔记本”，安装名称会显示为“Codex · 台式机”“Codex · 笔记本”。已安装图标的名称更新由浏览器处理，可能不会立即改变。</p>
+    <p class="muted">本机最多保存 5 条最近对话的有限文字预览；超过 7 天后不再恢复，下次打开时清除。不保存命令输出和图片文件。新内容和运行状态需要联网核对。确认授权失效或清除预览时会删除这些文字。</p>
+    <p class="muted">锁屏提醒需在侧栏“提醒设置”开启后台提醒，并用测试提醒验证手机实际支持。</p>
+    <div class="modal-actions"><button id="installNowBtn" class="btn primary" type="button" hidden>安装应用</button><button id="fullscreenAppBtn" class="btn" type="button" hidden>全屏显示</button><button id="checkInstallUpdateBtn" class="btn" type="button">检查更新</button><button id="updateAppBtn" class="btn" type="button" hidden>保存草稿并更新页面</button><button id="clearResumeBtn" class="btn" type="button">清除本机文字预览</button></div><p id="installHint" class="muted" role="status"></p>
+  </div></div>
+</body>
+</html>

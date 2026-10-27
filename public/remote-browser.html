@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relay · ChatGPT 网页</title><link rel="stylesheet" href="/styles.css"></head>
+<body class="remote-browser-page">
+  <main class="remote-browser-shell">
+    <header class="remote-browser-head"><div><h1>ChatGPT 网页</h1><p id="remoteBrowserStatus">尚未启动家里的远程浏览器。</p></div><div class="remote-browser-actions"><label class="remote-browser-quality">画质<select id="remoteBrowserQuality"><option value="low">低流量</option><option value="balanced" selected>平衡</option><option value="high">高画质</option></select></label><button class="btn primary" id="remoteBrowserStart" type="button">启动远程浏览器</button></div></header>
+    <p class="muted remote-browser-note">浏览器运行在家里的电脑，登录状态不会传到这里。公司电脑只接收压缩画面和你的操作。</p>
+    <div class="remote-browser-screen-wrap"><img id="remoteBrowserScreen" alt="家里电脑上的 ChatGPT 网页画面"><div class="remote-browser-empty" id="remoteBrowserEmpty">点击“启动远程浏览器”，家里电脑会打开一个专用浏览器配置。首次使用请在家里电脑完成 ChatGPT 登录。</div></div>
+    <form class="remote-browser-input" id="remoteBrowserInput"><input id="remoteBrowserText" type="text" maxlength="20000" placeholder="向当前网页输入文字"><button class="btn" type="submit">输入</button><button class="btn" id="remoteBrowserEnter" type="button">回车</button></form>
+  </main>
+  <script type="module" src="/remote-browser.js"></script>
+</body>
+</html>

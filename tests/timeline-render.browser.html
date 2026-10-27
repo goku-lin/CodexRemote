@@ -1,0 +1,42 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay timeline rendering regression</title><link rel="stylesheet" href="/styles.css">
+<style>body{display:block;height:auto;padding:20px;overflow:auto}#messages{height:420px;width:min(700px,100%)}#result{white-space:pre-wrap}</style>
+<pre id="result">Running</pre><div id="messages" class="messages"></div>
+<script type="module">
+import {state,renderTimeline} from '/app-profile.js';
+const results=[],check=(label,passed)=>{results.push({label,passed:!!passed});if(!passed)throw new Error(label);};
+const session={id:'timeline-fixture',status:'done',turnCount:8,turns:Array.from({length:8},(_,i)=>({id:'t'+i,status:'completed'}))};
+const view={timeline:Array.from({length:8},(_,i)=>[
+  {id:'u'+i,turnId:'t'+i,type:'userMessage',text:'用户输入 '+i},
+  {id:'note'+i,turnId:'t'+i,type:'agentMessage',text:'过程正文 '+i,phase:'commentary'},
+  {id:'command'+i,turnId:'t'+i,type:'commandExecution',command:'echo turn-'+i},
+  {id:'answer'+i,turnId:'t'+i,type:'agentMessage',phase:'final_answer',text:'最终回复 '+i}
+]).flat()};
+state.sessions=[session];state.activeSessionId=session.id;
+try {
+  renderTimeline(view,session);
+  check('initial display keeps the latest five turns',document.querySelectorAll('[data-turn-id]').length===5);
+  const recent=document.querySelector('[data-turn-id="t7"]');
+  document.querySelector('#showAllTimeline').click();
+  check('show all adds earlier turns without replacing recent history',document.querySelectorAll('[data-turn-id]').length===8 && document.querySelector('[data-turn-id="t7"]')===recent);
+  const disclosure=recent.querySelector('.turn-history');disclosure.open=true;state.openDetailKeys.add('t7:history');renderTimeline(view,session);
+  check('opening history renders deferred content',disclosure.open && disclosure.querySelector('.process-note')?.textContent==='过程正文 7');
+  disclosure.querySelector('.process-group').open=true;state.openDetailKeys.add('t7:process:command7:group');renderTimeline(view,session);
+  disclosure.querySelector('.process-item').open=true;state.openDetailKeys.add('t7:process:command7:command7');renderTimeline(view,session);
+  const command=disclosure.querySelector('.process-item');
+  check('nested command output remains accessible',command?.open && command.querySelector('pre')?.textContent==='echo turn-7');
+  view.timeline.find(item=>item.id==='answer6').text='编辑后的回复';renderTimeline(view,session);
+  check('historical edits refresh HTML without closing other histories',document.querySelector('[data-turn-id="t6"]').textContent.includes('编辑后的回复') && disclosure.open);
+  document.querySelector('#recentTimeline').click();
+  check('collapse retains recent turn and disclosure identity',document.querySelectorAll('[data-turn-id]').length===5 && recent.isConnected && command.isConnected && command.open);
+  session.turns.at(-1).status='inProgress';session.status=view.status='running';
+  view.timeline.push({id:'resumed',turnId:'t7',type:'commandExecution',command:'echo resumed'});renderTimeline(view,session);
+  check('resumed turn shows chronological activity',recent.querySelector('.turn-live') && !recent.querySelector('.turn-history'));
+  const assistant=recent.querySelector('[data-node-key="t7:item:answer7"]');
+  view.timeline.find(item=>item.id==='answer7').text+='\n新输出';renderTimeline(view,session);
+  check('stream updates retain assistant nodes and show new output',assistant===recent.querySelector('[data-node-key="t7:item:answer7"]') && assistant.textContent.includes('新输出'));
+  renderTimeline({timeline:[]},{id:'empty',status:'done'});
+  check('switching to empty conversation removes old turns',!document.querySelector('[data-turn-id]') && document.querySelector('#messages').textContent.includes('选择一个对话开始'));
+} catch(error) {results.push({label:error.message,passed:false});}
+document.querySelector('#result').textContent=JSON.stringify({passed:results.every(item=>item.passed),results},null,2);
+</script></html>

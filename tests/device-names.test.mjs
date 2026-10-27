@@ -1,0 +1,58 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {createServer} from 'node:net';
+import {request} from 'node:http';
+import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {deviceName} from '../public/device-names.js';
+
+test('computer names accept Chinese labels and reject empty, oversized, or multiline names',()=>{
+  assert.equal(deviceName('  家里电脑  '),'家里电脑');
+  for(const value of [null,42,'','   ','a'.repeat(81),'电脑\n第二行','电脑\0'])assert.throws(()=>deviceName(value));
+});
+
+test('authorized pairing can name the Codex computer; names survive runner reconnects and backend reloads',{timeout:15000},async t=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'relay-device-name-')),children=[];
+  t.after(async()=>{for(const child of children)if(child.exitCode===null && child.signalCode===null){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;}assert.equal(path.dirname(directory),os.tmpdir());await rm(directory,{recursive:true,force:true});});
+  await writeFile(path.join(directory,'network.json'),JSON.stringify({externalOrigin:'https://relay-name.test-tail.ts.net'}));
+  const reservation=createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+  const base=`http://127.0.0.1:${port}`,remote={host:'relay-name.test-tail.ts.net','x-forwarded-proto':'https'};
+  const start=async()=>{const child=spawn(process.execPath,['server.mjs'],{cwd:new URL('..',import.meta.url),windowsHide:true,env:{...process.env,PORT:String(port),HOST:'127.0.0.1',CODEX_RELAY_NO_EMBEDDED:'1',CODEX_RELAY_PARENT_PIPE:'0',CODEX_RELAY_TOKEN:'name-fixture',CODEX_RELAY_DATA_DIR:directory}});children.push(child);await new Promise((resolve,reject)=>{child.once('error',reject);child.stdout.on('data',chunk=>{if(String(chunk).includes('listening'))resolve();});});return child;};
+  const send=(endpoint,{headers={},body,method=body===undefined ? 'GET' : 'POST'}={})=>new Promise((resolve,reject)=>{const req=request(base+endpoint,{method,headers:{'content-type':'application/json',...headers}},res=>{let text='';res.setEncoding('utf8');res.on('data',chunk=>text+=chunk);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,json:JSON.parse(text)}));});req.on('error',reject);req.end(body===undefined ? undefined : JSON.stringify(body));});
+  let child=await start();
+  const initial=(await send('/api/bootstrap')).json.devices[0].name;
+  assert.equal((await send('/api/devices/local/name',{headers:remote,method:'PATCH',body:{name:'未经配对'}})).status,401);
+  const info=(await send('/api/phone')).json;
+  assert.notEqual((await send('/api/access/pair',{headers:remote,body:{code:info.code==='00000000' ? '00000001' : '00000000',computerName:'错误连接'}})).status,200);
+  assert.equal((await send('/api/bootstrap')).json.devices[0].name,initial);
+  const pair=await send('/api/access/pair',{headers:remote,body:{code:info.code,computerName:'家里电脑',deviceName:'测试手机'}});
+  assert.equal(pair.status,200);const paired={...remote,cookie:pair.headers['set-cookie'][0].split(';')[0]};
+  assert.equal((await send('/api/bootstrap',{headers:paired})).json.devices[0].name,'家里电脑');
+  const homeManifest=await send('/manifest.webmanifest',{headers:remote});
+  assert.equal(homeManifest.status,200);assert.match(homeManifest.headers['content-type'],/application\/manifest\+json/);
+  assert.equal(homeManifest.json.name,'Codex · 家里电脑');assert.equal(homeManifest.json.short_name,'Codex · 家里电脑');assert.equal(homeManifest.json.id,'/');
+  assert.match(homeManifest.json.icons[0].src,/app-icon-home-192\.png\?v=/);
+  for(const name of ['',42,'a'.repeat(81),'换行\n名称'])assert.equal((await send('/api/devices/local/name',{headers:paired,method:'PATCH',body:{name}})).status,400);
+  assert.equal((await send('/api/devices/unknown/name',{headers:paired,method:'PATCH',body:{name:'不存在'}})).status,404);
+  assert.equal((await send('/api/devices/local/name',{headers:paired,method:'PATCH',body:{name:'办公室电脑'}})).json.device.name,'办公室电脑');
+  const renamedManifest=(await send('/manifest.webmanifest',{headers:remote})).json;
+  assert.equal(renamedManifest.name,'Codex · 办公室电脑');assert.equal(renamedManifest.id,homeManifest.json.id);
+  assert.match(renamedManifest.icons[0].src,/app-icon-office-192\.png\?v=/);
+  const beforeWorker=await fetch(base+'/notification-worker.js').then(r=>r.text());
+  assert.equal((await send('/api/devices/local/name',{headers:paired,method:'PATCH',body:{name:'办公室电脑',iconTheme:'laptop'}})).json.device.iconTheme,'laptop');
+  const iconManifest=(await send('/manifest.webmanifest',{headers:remote})).json;
+  assert.match(iconManifest.icons[0].src,/app-icon-laptop-192\.png/);assert.equal(iconManifest.id,homeManifest.json.id);
+  const installedIcon=await fetch(base+iconManifest.icons[0].src);assert.match(installedIcon.headers.get('content-type'),/image\/png/);assert.equal(Buffer.from(await installedIcon.arrayBuffer()).readUInt32BE(16),192);
+  const index=await fetch(base+'/').then(r=>r.text());assert.ok(index.includes('href="'+iconManifest.icons[0].src+'"'));
+  const afterWorker=await fetch(base+'/notification-worker.js').then(r=>r.text());assert.notEqual(beforeWorker.match(/SHELL_CACHE='([^']+)'/)[1],afterWorker.match(/SHELL_CACHE='([^']+)'/)[1]);
+  assert.equal((await send('/api/devices/local/name',{headers:paired,method:'PATCH',body:{name:'不能改掉当前名称',iconTheme:'unknown'}})).status,400);
+  assert.equal((await send('/api/bootstrap',{headers:paired})).json.devices[0].name,'办公室电脑');
+  const connection=await fetch(base+'/api/runner/local/commands?name=Old%20Runner',{headers:{'x-codex-relay-token':'name-fixture'}});
+  assert.equal((await send('/api/bootstrap',{headers:paired})).json.devices[0].name,'办公室电脑');await connection.body.cancel();
+  const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;child=await start();
+  assert.equal((await send('/api/bootstrap',{headers:paired})).json.devices[0].name,'办公室电脑');
+  assert.equal(JSON.parse(await readFile(path.join(directory,'preferences.json'),'utf8')).deviceNames.local,'办公室电脑');
+  assert.equal((await send('/api/bootstrap',{headers:paired})).json.devices[0].iconTheme,'laptop');
+});

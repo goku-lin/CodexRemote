@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay 阅读位置验证</title><link rel="stylesheet" href="/styles.css">
+<style>
+body { display:block; height:auto; min-height:100vh; padding:24px; overflow:auto; }
+#fixture { width:min(700px,100%); height:360px; border:1px solid #888; padding-right:12px; }
+#result { white-space:pre-wrap; margin-top:24px; }
+.sample-history { height:450px; }
+.sample-output { height:100px; }
+</style>
+<h1>阅读位置验证</h1><div class="messages" id="fixture"></div><pre id="result">正在验证…</pre>
+<script type="module">
+import {syncHtml,syncHtmlParts} from '/dom-sync.js';
+import {TimelineViewport} from '/timeline-scroll.js';
+const fixture=document.querySelector('#fixture');
+const results=[];
+const check=(label,condition)=>{results.push({label,passed:!!condition});if(!condition)throw new Error(label);};
+const close=(a,b)=>Math.abs(a-b)<2;
+const oldTurn='<section class="turn" data-turn-id="old"><div class="sample-history">较早的对话</div></section>';
+const user=id=>`<div class="message you" data-message-id="${id}" data-node-key="${id}"><div class="bubble">新的用户输入 ${id}</div></div>`;
+const live=(id,output='')=>`<section class="turn" data-turn-id="${id}">${user(id)}${output}<div class="turn-live" data-node-key="${id}:live">正在处理</div></section>`;
+const outputRows=Array.from({length:8},(_,i)=>`<div class="message assistant sample-output" data-node-key="output-${i}">执行过程 ${i+1}</div>`);
+const output=outputRows.join('');
+let partsMode=false;
+const render=(viewport,session,input,html)=>{
+  const snapshot=viewport.capture(fixture,session,input);
+  let changed;
+  if(partsMode){const template=document.createElement('template');template.innerHTML=html;changed=syncHtmlParts(fixture,[...template.content.children].map(node=>({key:node.dataset.turnId,html:node.outerHTML})));}
+  else changed=syncHtml(fixture,html);
+  if(changed || snapshot.switched || snapshot.positionInput)viewport.restore(fixture,snapshot);
+};
+const offset=id=>fixture.querySelector(`[data-message-id="${id}"]`).getBoundingClientRect().top-fixture.getBoundingClientRect().top;
+try {
+  for(const mode of [false,true]) for(const width of [700,360]) {
+    partsMode=mode;
+    fixture.style.width=`${width}px`;
+    const viewport=new TimelineViewport();
+    render(viewport,'a','u1',oldTurn+live('u1'));
+    check(`${width}px：短用户消息也能定位到上方`,close(offset('u1'),16));
+    const top=fixture.scrollTop;
+    for(let i=0;i<8;i++)render(viewport,'a','u1',oldTurn+live('u1',outputRows.slice(0,i+1).join('')));
+    render(viewport,'a','u1',oldTurn+live('u1',output));
+    check(`${width}px：连续执行不推动用户消息`,close(fixture.scrollTop,top) && close(offset('u1'),16));
+    fixture.scrollTop=fixture.scrollHeight-fixture.clientHeight;
+    const atBottom=fixture.scrollTop;
+    render(viewport,'a','u1',oldTurn+live('u1',output+'<div class="message assistant sample-output" data-node-key="extra">新输出</div>'));
+    check(`${width}px：位于底部也不追随新输出`,close(fixture.scrollTop,atBottom));
+    const anchor=fixture.querySelector('[data-node-key="output-6"]');
+    const before=anchor.getBoundingClientRect().top;
+    render(viewport,'a','u1','<section class="turn" data-turn-id="older"><div style="height:250px">更早的历史</div></section>'+oldTurn+live('u1',output+'<div class="message assistant sample-output" data-node-key="extra">新输出</div>'));
+    check(`${width}px：加载较早历史保留阅读位置`,close(anchor.getBoundingClientRect().top,before));
+    render(viewport,'a','steering',oldTurn+live('u1',output+user('steering')));
+    check(`${width}px：同一运行回合的追加输入也能定位到上方`,close(offset('steering'),16));
+    const steeringTop=fixture.scrollTop;
+    render(viewport,'a','steering',oldTurn+live('u1',output+user('steering')+'<div class="message assistant sample-output" data-node-key="steering-output">追加输入后的过程</div>'));
+    check(`${width}px：追加输入之后的执行仍保持位置`,close(fixture.scrollTop,steeringTop) && close(offset('steering'),16));
+    render(viewport,'a','u2',oldTurn+live('u1',output)+live('u2'));
+    check(`${width}px：下一次用户输入才重新定位`,close(offset('u2'),16));
+    render(viewport,'a','u2',oldTurn+live('u1',output)+`<section class="turn" data-turn-id="u2">${user('u2')}<div class="turn-result">最终回复</div></section>`);
+    check(`${width}px：完成折叠后仍保留用户消息位置`,close(offset('u2'),16));
+  }
+} catch(error){results.push({label:error.message,passed:false});}
+const passed=results.every(item=>item.passed);
+document.querySelector('h1').textContent=`阅读位置验证：${passed ? `${results.length} 项通过` : '未通过'}`;
+document.querySelector('#result').textContent=JSON.stringify({passed,results},null,2);
+</script></html>

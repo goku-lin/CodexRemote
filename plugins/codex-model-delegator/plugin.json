@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-model-delegator",
+  "version": "0.2.0",
+  "description": "Optional local MCP tools for delegating bounded tasks to model APIs, Claude Code, Codex CLI, or DeepSeek Harness.",
+  "license": "MIT",
+  "keywords": ["codex", "mcp", "subagent", "model-routing"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Codex Model Delegator",
+        "shortDescription": "Delegate bounded work to configured specialist models.",
+        "longDescription": "Adds optional MCP tools for model consultation and independent coding CLI tasks. Claude Code supports native session resume and local execution records. Credentials remain with the configured CLI or host environment.",
+        "developerName": "CodexRemote",
+        "category": "developer-tools",
+        "capabilities": []
+      }
+    }
+  }
+}

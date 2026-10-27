@@ -1,0 +1,51 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createMediaFixture} from './media-fixture.mjs';
+import {MEDIA_CHUNK_BYTES} from '../src/media-reader.mjs';
+import {localRequest} from '../src/connector-node.mjs';
+
+test('media routes stay private, preview sends small images, and audio supports bounded seek/download', {timeout:20000},async t=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'relay-media-server-'));
+  const image=path.join(directory,'image.png'),audio=path.join(directory,'sound.mp3');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7l0AAAAASUVORK5CYII=','base64');
+  const bytes=Buffer.alloc(3*MEDIA_CHUNK_BYTES,27);bytes.write('ID3');await writeFile(image,png);await writeFile(audio,bytes);
+  const preview=Buffer.from('RIFFxxxxWEBPpreview');
+  const fixture=await createMediaFixture({directory,files:[image,audio],thumbnail:async()=>preview});
+  t.after(async()=>{await fixture.close();assert.equal(path.dirname(directory),os.tmpdir());await rm(directory,{recursive:true,force:true});});
+  const url=ref=>fixture.base+'/api/sessions/'+fixture.session.id+'/media?ref='+encodeURIComponent(ref);
+  await fetch(fixture.base+'/api/bootstrap');await fetch(fixture.base+'/api/sessions/'+fixture.session.id+'/history');assert.equal(fixture.requests.length,0);
+  assert.equal((await fetch(url(path.join(directory,'secret.mp3')))).status,403);assert.equal(fixture.requests.length,0);
+  const unauthorized=await fetch(url(audio),{headers:{'x-forwarded-proto':'https'}});assert.equal(unauthorized.status,401);assert.equal(fixture.requests.length,0);
+  const metadata=await (await fetch(url(audio)+'&info=1')).json();assert.equal(metadata.size,bytes.length);assert.equal(fixture.stats().originalBytes,0);
+  const small=await fetch(url(image)+'&preview=1');assert.equal(small.status,200);assert.equal(small.headers.get('content-type'),'image/webp');assert.deepEqual(Buffer.from(await small.arrayBuffer()),preview);assert.equal(fixture.stats().originalBytes,0);
+  const head=await fetch(url(audio),{method:'HEAD'});assert.equal(head.headers.get('accept-ranges'),'bytes');assert.equal(head.headers.get('content-length'),String(bytes.length));assert.equal(fixture.stats().originalBytes,0);
+  const first=await fetch(url(audio),{headers:{range:'bytes=0-'}});assert.equal(first.status,206);assert.equal(first.headers.get('content-range'),`bytes 0-${MEDIA_CHUNK_BYTES-1}/${bytes.length}`);assert.deepEqual(Buffer.from(await first.arrayBuffer()),bytes.subarray(0,MEDIA_CHUNK_BYTES));
+  const seek=await fetch(url(audio),{headers:{range:'bytes=300000-300999'}});assert.equal(seek.status,206);assert.deepEqual(Buffer.from(await seek.arrayBuffer()),bytes.subarray(300000,301000));
+  const suffix=await fetch(url(audio),{headers:{range:'bytes=-100'}});assert.equal(suffix.status,206);assert.equal((await suffix.arrayBuffer()).byteLength,100);
+  const routed=await localRequest(fixture.base,{path:new URL(url(audio)).pathname+new URL(url(audio)).search,headers:{range:'bytes=500-599','if-range':head.headers.get('etag')}});
+  assert.equal(routed.status,206);assert.equal(routed.headers['content-range'],`bytes 500-599/${bytes.length}`);assert.deepEqual(Buffer.from(routed.body,'base64'),bytes.subarray(500,600));
+  const invalid=await fetch(url(audio),{headers:{range:'bytes=999999999-'}});assert.equal(invalid.status,416);assert.equal(invalid.headers.get('content-range'),'bytes */'+bytes.length);
+  const download=await fetch(url(audio)+'&download=1');assert.equal(download.status,200);assert.match(download.headers.get('content-disposition'),/^attachment/);assert.deepEqual(Buffer.from(await download.arrayBuffer()),bytes);
+  assert.ok(fixture.requests.filter(item=>item.action==='read').every(item=>item.length<=MEDIA_CHUNK_BYTES));
+  await fixture.history();assert.equal((await (await fetch(url(audio)+'&info=1')).json()).size,bytes.length);
+  const live=path.join(directory,'live.mp3');await writeFile(live,bytes);
+  assert.equal((await fetch(url(live)+'&info=1')).status,403);
+  const delta=text=>fixture.post({type:'codex',origin:'desktop',sessionId:fixture.session.id,message:{method:'item/agentMessage/delta',params:{threadId:'media-fixture',turnId:'live-turn',itemId:'live-audio',delta:text}}});
+  await delta('[声音](<'+live.slice(0,-4));assert.equal((await fetch(url(live)+'&info=1')).status,403);
+  await delta('.mp3>)');assert.equal((await fetch(url(live)+'&info=1')).status,200);
+});
+
+test('existing slash-prefixed Windows image links return both thumbnails and original bytes',{skip:process.platform!=='win32',timeout:15000},async t=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'relay-media-rooted-link-')),image=path.join(directory,'after_0_sheet.png');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7l0AAAAASUVORK5CYII=','base64');await writeFile(image,png);
+  const ref='/'+image.replaceAll('\\','/'),preview=Buffer.from('RIFFxxxxWEBPpreview'),fixture=await createMediaFixture({directory,files:[ref],thumbnail:async()=>preview});
+  t.after(async()=>{await fixture.close();assert.equal(path.dirname(directory),os.tmpdir());await rm(directory,{recursive:true,force:true});});
+  const url=fixture.base+'/api/sessions/'+fixture.session.id+'/media?ref='+encodeURIComponent(ref);
+  assert.equal(fixture.requests.length,0);
+  const small=await fetch(url+'&preview=1');assert.equal(small.status,200);assert.equal(small.headers.get('content-type'),'image/webp');assert.deepEqual(Buffer.from(await small.arrayBuffer()),preview);
+  const original=await fetch(url);assert.equal(original.status,200);assert.equal(original.headers.get('content-type'),'image/png');assert.deepEqual(Buffer.from(await original.arrayBuffer()),png);
+  assert.equal((await fetch(fixture.base+'/api/sessions/'+fixture.session.id+'/media?ref='+encodeURIComponent(image))).status,403);
+});

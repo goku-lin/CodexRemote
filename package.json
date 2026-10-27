@@ -1,0 +1,31 @@
+{
+  "name": "codex-relay",
+  "version": "0.1.0",
+  "description": "Local-first browser control plane for Codex Desktop and Windows execution devices.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node start.mjs",
+    "runner": "node start.mjs --runner",
+    "delegate-mcp": "node src/delegate-mcp.mjs",
+    "connect:private": "node src/private-access.mjs",
+    "connect:hybrid": "node src/private-access.mjs --hybrid",
+    "connect:desktop": "node src/native-desktop-setup.mjs prepare",
+    "build": "node src/connector-release.mjs --candidate --public",
+    "test:package": "node tests/connector-package-check.mjs",
+    "package:connector": "node src/connector-release.mjs",
+    "service": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/启动项目.ps1",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "werift": "0.25.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
