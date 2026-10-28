@@ -22,7 +22,7 @@ try{
   await extractArchive(bytes,directory);
   const metadata=JSON.parse(await fs.readFile(path.join(directory,'release.json'),'utf8'));
   verifyRelease(release,metadata.distribution==='public'?{publicKey:metadata.signingPublicKey,sequence:0}:updateSource(metadata.updates));
-  if(metadata.distribution==='public'&&metadata.updates)throw new Error('Public package contains machine OTA configuration');
+  if(metadata.distribution==='public' && (updateSource(metadata.updates).kind!=='github' || metadata.updates.urls || metadata.updates.publicKey!==metadata.signingPublicKey))throw new Error('Public package has an invalid public update source');
   const names=await fs.readdir(directory,{recursive:true});
   assertPublicFiles(names);
   await fs.access(path.join(directory,'app','lan-access.ps1'));

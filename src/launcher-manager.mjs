@@ -8,6 +8,7 @@ import {projectRoot} from './layout.mjs';
 import {availableRelease,updateSource} from './connector-updates.mjs';
 import {setMaintenancePassword} from './maintenance-auth.mjs';
 import {accountSwitcherStatus,openAccountSwitcher} from './account-switcher.mjs';
+import {initializeUpdateSource} from './connector-client.mjs';
 
 const execute=promisify(execFile);
 const json=async file=>JSON.parse((await fs.readFile(file,'utf8')).replace(/^\ufeff/,''));
@@ -91,14 +92,18 @@ export async function managerAction(request,context,options={}){
     }
     case 'check-update':{
       if(!context.home){const release=await json(path.join(context.dataDir,'releases','latest.json')).catch(()=>null);return {message:'本机使用工作目录中的代码。'+(release?'已发布连接器版本：'+release.version:'尚未发布连接器更新。')+'\n“刷新后台代码”会加载本机现有代码，不会自动拉取 Git 或重启 Codex。'};}
+      await initializeUpdateSource(context.home);
       const source=updateSource(await json(path.join(context.dataDir,'update-source.json'))),release=await availableRelease(source,options),current=await json(path.join(context.home,'current.json'));
-      return {message:release.manifest.version===current.version?'连接器已是最新发布版本。':'发现新版：'+release.manifest.version+'。点击“安装连接器更新”，有运行任务时会暂缓。'};
+      if(release.status==='empty')return {message:'暂无支持自动更新的发布版本。',update:{status:'empty'}};
+      const currentVersion=release.manifest.version===current.version;
+      return {message:currentVersion?'连接器已是最新发布版本。':'发现新版：'+(release.release?.name || release.manifest.version)+'。点击“安装连接器更新”，有运行任务时会暂缓。',
+        update:{status:currentVersion?'current':'available',version:release.manifest.version,release:release.release || null}};
     }
     case 'update':{
       if(!context.home)throw new Error('本机工作目录请使用“刷新后台代码”。');
       if(request.confirmNetwork!==true)throw new Error('更新可能让远程网页短暂重连，请先确认。');
       const client=path.join(context.app,'connector-client.mjs');
-      const result=await run(process.execPath,[client,'auto-update','--home',context.home],{cwd:context.home,windowsHide:true,timeout:180000,maxBuffer:262144});return {message:result.stdout.trim()};
+      const result=await run(process.execPath,[client,'auto-update','--home',context.home,'--install'],{cwd:context.home,windowsHide:true,timeout:180000,maxBuffer:262144});return {message:result.stdout.trim()};
     }
     case 'restart':{
       if(request.confirmNetwork!==true)throw new Error('重启服务会短暂断开网页连接，请先确认。');

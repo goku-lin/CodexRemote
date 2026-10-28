@@ -8,7 +8,7 @@ import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {createArchive} from '../src/connector-archive.mjs';
 import {autoUpdate,entries,install,ensureStableRuntime} from '../src/connector-client.mjs';
-import {releaseSigningKey,signRelease,verifyRelease,updateSource,updateUrl,lanUpdateRequest,availableRelease} from '../src/connector-updates.mjs';
+import {releaseSigningKey,signRelease,verifyRelease,updateSource,updateUrl,lanUpdateRequest,availableRelease,downloadRelease} from '../src/connector-updates.mjs';
 
 async function folder(t){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'relay-auto-update-'));
@@ -154,6 +154,78 @@ test('unreachable updates report address and actual failure; name resolution is 
   const began=Date.now();
   await assert.rejects(()=>availableRelease({...source,urls:['http://publisher-pc:4317']},{timeout:30,resolve:()=>new Promise(()=>{}),fetcher:async()=>new Response('',{status:403})}),/HTTP 403.*电脑名解析超时/);
   assert.ok(Date.now()-began<1000);
+});
+
+async function githubFixture(t){
+  const f=await fixture(t),repository='example/remote',tag='v0.1.1',base='https://github.com/'+repository+'/releases/download/'+tag+'/';
+  const source={schema:1,kind:'github',repository,channel:'preview',publicKey:f.key.publicKey,sequence:1};
+  await save(path.join(f.state,'update-source.json'),source);
+  const manifest=signRelease({version:f.version,filename:'connector-'+f.version+'.zip',size:f.bytes.length,sha256:crypto.createHash('sha256').update(f.bytes).digest('hex'),sequence:2},f.key);
+  const release={tag_name:tag,name:'版本 0.1.1',body:'更新说明\n保留配置',draft:false,prerelease:true,assets:[
+    {name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},
+    {name:manifest.filename,state:'uploaded',size:f.bytes.length,browser_download_url:base+manifest.filename}
+  ]};
+  let downloads=0;const requests=[];
+  const fetcher=async(url,options)=>{
+    requests.push({url,options});assert.equal(options.headers.Authorization,undefined);assert.equal(options.redirect,'manual');
+    if(url.startsWith('https://api.github.com/'))return Response.json([release]);
+    if(url.endsWith('/update-manifest.json'))return Response.json(manifest);
+    if(url.endsWith('.zip')){downloads++;return new Response(f.bytes);}
+    throw new Error('Unexpected URL '+url);
+  };
+  return {...f,source,manifest,release,requests,fetcher,get archiveDownloads(){return downloads;}};
+}
+
+test('GitHub check exposes release notes without downloading or restarting; installation keeps local data',async t=>{
+  const f=await githubFixture(t),options={...f.options,fetcher:f.fetcher};
+  const checked=await autoUpdate(f.home,options);
+  assert.equal(checked.status,'available');assert.equal(checked.release.name,'版本 0.1.1');assert.match(checked.release.notes,/保留配置/);
+  assert.equal(f.archiveDownloads,0);assert.deepEqual(f.calls,[]);assert.equal((await f.pointer()).version,f.old);
+  assert.equal((await autoUpdate(f.home,{...options,install:true,activeWork:async()=>true})).status,'deferred');assert.equal(f.archiveDownloads,0);
+  assert.equal((await autoUpdate(f.home,{...options,install:true,activeWork:async()=>false})).status,'updated');assert.equal(f.archiveDownloads,1);
+  assert.deepEqual(f.calls,['prepare','entries','stop','launch','ready']);
+  for(const [name,value] of Object.entries(f.stable))assert.deepEqual(await json(path.join(f.state,name)),value);
+  assert.equal((await autoUpdate(f.home,options)).status,'current');assert.equal(f.archiveDownloads,1);
+});
+
+test('GitHub rejects mismatched keys, rollbacks, external assets and unsafe redirects',async t=>{
+  const f=await githubFixture(t),other=await releaseSigningKey(path.join(f.directory,'foreign'));
+  await assert.rejects(availableRelease({...f.source,publicKey:other.publicKey},{fetcher:f.fetcher}),/签名/);
+  await assert.rejects(availableRelease({...f.source,sequence:3},{fetcher:f.fetcher}),/较旧/);
+  f.release.assets[0].browser_download_url='https://evil.example/update-manifest.json';
+  await assert.rejects(availableRelease(f.source,{fetcher:f.fetcher}),/地址无效/);
+  f.release.assets[0].browser_download_url='https://github.com/example/remote/releases/download/v0.0.1/update-manifest.json';
+  await assert.rejects(availableRelease(f.source,{fetcher:f.fetcher}),/同一发布版本/);
+  const target={kind:'github',repository:f.source.repository,url:f.release.assets[1].browser_download_url};
+  for(const location of ['http://release-assets.githubusercontent.com/data','https://evil.example/data','https://127.0.0.1/data','https://user:pass@github.com/data']){
+    await assert.rejects(downloadRelease(target,f.manifest,{fetcher:async()=>new Response(null,{status:302,headers:{location}})}),/重定向地址无效/);
+  }
+});
+
+test('GitHub handles a signed asset CDN redirect, rejects corrupted downloads and remains usable offline',async t=>{
+  const f=await githubFixture(t),target={kind:'github',repository:f.source.repository,url:f.release.assets[1].browser_download_url};
+  const fetched=await downloadRelease(target,f.manifest,{fetcher:async url=>url.startsWith('https://github.com/')?new Response(null,{status:302,headers:{location:'https://release-assets.githubusercontent.com/file?signature=fixture'}}):new Response(f.bytes)});
+  assert.deepEqual(fetched,f.bytes);
+  await assert.rejects(downloadRelease(target,f.manifest,{fetcher:async()=>new Response('corrupt')}),/校验失败/);
+  const failed=await autoUpdate(f.home,{...f.options,install:true,fetcher:async()=>{throw new Error('offline');}});
+  assert.equal(failed.status,'unavailable');assert.equal((await f.pointer()).version,f.old);assert.deepEqual(f.calls,[]);
+  await assert.rejects(availableRelease(f.source,{fetcher:async()=>new Response('',{status:403})}),/受限/);
+});
+
+test('GitHub stable channel excludes preview and draft releases; old releases without manifests need no update',async t=>{
+  const f=await githubFixture(t);
+  assert.deepEqual(await availableRelease({...f.source,channel:'stable'},{fetcher:f.fetcher}),{status:'empty'});
+  f.release.draft=true;assert.deepEqual(await availableRelease(f.source,{fetcher:f.fetcher}),{status:'empty'});
+  f.release.draft=false;f.release.assets=[];assert.equal((await autoUpdate(f.home,{fetcher:f.fetcher})).status,'empty');
+  for(const repository of ['../remote','example/remote/path','example/remote?token=x'])assert.throws(()=>updateSource({...f.source,repository}));
+});
+
+test('public build signing can use a persistent CI secret without writing it to the working directory',async t=>{
+  const directory=await folder(t),key=await releaseSigningKey(path.join(directory,'publisher'));
+  const keyJson=await fs.readFile(path.join(directory,'publisher','release-signing-key.json'),'utf8');
+  const isolated=path.join(directory,'ci'),loaded=await releaseSigningKey(isolated,{keyJson});
+  assert.equal(loaded.publicKey,key.publicKey);assert.deepEqual(await fs.readdir(isolated),[]);
+  await assert.rejects(releaseSigningKey(isolated,{keyJson:'invalid'}));
 });
 
 test('the live publisher serves signed releases without a browser grant and rejects Funnel/proxy access',async t=>{

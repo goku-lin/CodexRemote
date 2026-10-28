@@ -1,6 +1,10 @@
 {
   "name": "codex-relay",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "codexRemote": {
+    "updateRepository": "goku-lin/CodexRemote",
+    "updateChannel": "preview"
+  },
   "description": "Local-first browser control plane for Codex Desktop and Windows execution devices.",
   "private": true,
   "license": "MIT",

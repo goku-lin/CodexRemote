@@ -38,6 +38,12 @@ function publicKey(value){
   return key;
 }
 export function updateSource(value){
+  if(value?.kind==='github'){
+    if(value.schema!==1 || !/^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9_.-]{1,100}$/i.test(value.repository)
+      || !['stable','preview'].includes(value.channel) || !Number.isSafeInteger(value.sequence) || value.sequence<1)throw new Error('GitHub 更新来源配置无效');
+    publicKey(value.publicKey);
+    return {schema:1,kind:'github',repository:value.repository,channel:value.channel,publicKey:value.publicKey,sequence:value.sequence};
+  }
   if(!value || value.schema!==1 || !Array.isArray(value.urls) || !value.urls.length || value.urls.length>8
     || !Number.isSafeInteger(value.sequence) || value.sequence<1)throw new Error('更新来源配置无效');
   publicKey(value.publicKey);
@@ -49,12 +55,12 @@ export function publisherUrls(port=4317){
   const names=/^[a-z0-9][a-z0-9-]{0,62}$/i.test(os.hostname()) ? [os.hostname()] : [];
   return [...new Set([...ips,...names].map(host=>updateUrl('http://'+host+':'+port)))].slice(0,8);
 }
-export async function releaseSigningKey(dataDir){
+export async function releaseSigningKey(dataDir,{keyJson}={}){
   await fs.mkdir(dataDir,{recursive:true});
   // No private key enters the package or a network response.
   const keyFile=path.join(dataDir,'release-signing-key.json');
   let saved;
-  try{saved=JSON.parse(await fs.readFile(keyFile,'utf8'));}
+  try{saved=JSON.parse(keyJson || await fs.readFile(keyFile,'utf8'));}
   catch(error){
     if(error.code!=='ENOENT')throw error;
     const pair=crypto.generateKeyPairSync('ed25519');
@@ -83,7 +89,7 @@ export function verifyRelease(value,source){
   if(payload.sequence<source.sequence)throw new Error('拒绝安装较旧的发布版本');
   return {...payload,signature:value.signature};
 }
-async function boundedBytes(response,limit){
+export async function boundedBytes(response,limit){
   const size=Number(response.headers.get('content-length'));
   if(size>limit)throw new Error('更新响应过大');
   let length=0;const chunks=[];
@@ -108,6 +114,7 @@ async function lanCandidates(url,{resolve,timeout}){
 }
 export async function availableRelease(source,{fetcher=fetch,timeout=2500,resolve=lookup}={}){
   source=updateSource(source);
+  if(source.kind==='github')return githubRelease(source,{fetcher,timeout:Math.max(timeout,10000)});
   const probe=async url=>{
     const response=await fetcher(url+updateManifestPath,{redirect:'error',signal:AbortSignal.timeout(timeout)});
     if(!response.ok)throw new Error(response.status===403 ? '更新入口拒绝此网络地址（HTTP 403）' : '更新来源暂时不可用（HTTP '+response.status+'）');
@@ -132,9 +139,53 @@ export async function availableRelease(source,{fetcher=fetch,timeout=2500,resolv
   return verified[0];
 }
 export async function downloadRelease(url,manifest,{fetcher=fetch,timeout=120000}={}){
-  const response=await fetcher(updateUrl(url)+updatePackagePath(manifest.version),{redirect:'error',signal:AbortSignal.timeout(timeout)});
+  const response=typeof url==='object' && url?.kind==='github'
+    ? await githubResponse(githubAssetUrl(url.url,url.repository),{fetcher,timeout})
+    : await fetcher(updateUrl(url)+updatePackagePath(manifest.version),{redirect:'error',signal:AbortSignal.timeout(timeout)});
   if(!response.ok)throw new Error('更新安装包暂时不可用（HTTP '+response.status+'）');
   const bytes=await boundedBytes(response,manifest.size);
   if(bytes.length!==manifest.size || crypto.createHash('sha256').update(bytes).digest('hex')!==manifest.sha256)throw new Error('更新安装包校验失败');
   return bytes;
+}
+
+// Only public, anonymous GitHub release traffic. Browser grants, Codex accounts
+// and the publisher's GitHub credentials never enter update requests.
+function githubAssetUrl(value,repository){
+  const url=new URL(value);
+  if(url.protocol!=='https:' || url.hostname!=='github.com' || url.port || url.username || url.password || url.search || url.hash
+    || !url.pathname.startsWith('/'+repository+'/releases/download/'))throw new Error('GitHub 更新附件地址无效');
+  return url.href;
+}
+async function githubResponse(value,{fetcher,timeout}){
+  const signal=AbortSignal.timeout(timeout);let url=new URL(value);
+  for(let redirects=0;redirects<5;redirects++){
+    const response=await fetcher(url.href,{redirect:'manual',signal,headers:{Accept:'application/vnd.github+json','User-Agent':'CodexRemote-Updater','X-GitHub-Api-Version':'2022-11-28'}});
+    if(![301,302,303,307,308].includes(response.status)){
+      if(!response.ok)throw new Error(response.status===403 || response.status===429 ? 'GitHub 更新检查受限，请稍后再试' : 'GitHub 更新请求失败（HTTP '+response.status+'）');
+      return response;
+    }
+    await response.body?.cancel();const next=new URL(response.headers.get('location'),url);
+    if(next.protocol!=='https:' || next.port || next.username || next.password
+      || !['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(next.hostname))throw new Error('GitHub 更新下载重定向地址无效');
+    url=next;
+  }
+  throw new Error('GitHub 更新下载重定向过多');
+}
+async function githubRelease(source,{fetcher,timeout}){
+  const list=await githubResponse('https://api.github.com/repos/'+source.repository+'/releases?per_page=20',{fetcher,timeout});
+  const releases=JSON.parse((await boundedBytes(list,2_000_000)).toString('utf8'));
+  if(!Array.isArray(releases))throw new Error('GitHub 版本列表无效');
+  // Old releases without an updater manifest are manual-install releases.
+  const release=releases.find(item=>!item.draft && (source.channel==='preview' || !item.prerelease)
+    && item.assets?.some(asset=>asset.name==='update-manifest.json' && asset.state==='uploaded'));
+  if(!release)return {status:'empty'};
+  const asset=release.assets.find(item=>item.name==='update-manifest.json');
+  const response=await githubResponse(githubAssetUrl(asset.browser_download_url,source.repository),{fetcher,timeout});
+  const manifest=verifyRelease(JSON.parse((await boundedBytes(response,16384)).toString('utf8')),source);
+  const archive=release.assets.find(item=>item.name===manifest.filename && item.state==='uploaded');
+  if(!archive || archive.size!==manifest.size)throw new Error('GitHub 发布缺少完整的更新安装包');
+  const expected='/'+source.repository+'/releases/download/'+encodeURIComponent(release.tag_name)+'/';
+  for(const item of [asset,archive])if(new URL(githubAssetUrl(item.browser_download_url,source.repository)).pathname!==expected+item.name)throw new Error('GitHub 更新附件不属于同一发布版本');
+  return {url:{kind:'github',repository:source.repository,url:archive.browser_download_url},manifest,
+    release:{tag:String(release.tag_name).slice(0,120),name:String(release.name || release.tag_name).slice(0,200),notes:String(release.body || '此版本未提供更新说明。').slice(0,12000)}};
 }

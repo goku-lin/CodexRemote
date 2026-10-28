@@ -3,7 +3,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {install,entries,withUpdateLock} from './connector-client.mjs';
-import {verifyRelease} from './connector-updates.mjs';
+import {verifyRelease,updateSource} from './connector-updates.mjs';
 import {reuseRuntime,recordManagedRelease,cleanupManagedReleases} from './installation-storage.mjs';
 
 const json=async file=>JSON.parse((await fs.readFile(file,'utf8')).replace(/^\ufeff/,''));
@@ -17,6 +17,8 @@ async function installManagerPackageUnlocked({home,packageRoot,name,workspace,no
   const source=await json(path.join(home,'state/update-source.json')).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
   verifyRelease(manifest,{publicKey:source?.publicKey || manifest.installerPublicKey,sequence:source?.sequence || 0});
   if(metadata.version!==manifest.version)throw new Error('安装包版本不匹配。');
+  const next=metadata.updates?updateSource(metadata.updates):null;
+  if(next && (next.publicKey!==manifest.installerPublicKey || next.sequence!==manifest.sequence))throw new Error('安装包更新来源与发布签名不一致。');
   if(!previous){
     if(mode!=='fresh')throw new Error('未找到已有安装，未创建新目录。请选择原安装目录；确实首次使用时，再选择“首次安装”。');
     await installFresh({home,name:name || '此电脑',workspace:workspace || process.env.USERPROFILE || home,packageRoot,mode:'independent'},{launchConnector:async()=>{},managerOptions:{noShortcut}});
@@ -39,6 +41,10 @@ async function installManagerPackageUnlocked({home,packageRoot,name,workspace,no
       }
     }
     await writeEntries(home,{managerVersion:metadata.version,noShortcut});
+    if(next){
+      const filename=path.join(home,'state/update-source.json');
+      await fs.writeFile(filename+'.tmp',JSON.stringify({...next,sequence:Math.max(next.sequence,source?.sequence || 0)}),{mode:0o600});await fs.rename(filename+'.tmp',filename);
+    }
     // Do not claim ownership of pre-existing files: only new version folders
     // receive a receipt that allows later automatic cleanup.
     if(created)await recordManagedRelease(destination);

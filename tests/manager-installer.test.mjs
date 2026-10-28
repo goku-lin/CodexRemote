@@ -37,6 +37,18 @@ test('foreign publishers and replayed installers cannot change an existing insta
   await assert.rejects(installManagerPackage(f),/较旧/);
   assert.equal(await fs.access(path.join(f.home,'manager.json')).then(()=>true,()=>false),false);
 });
+test('repair bootstraps GitHub updates for an old install without stopping its service or copying accounts',async t=>{
+  const f=await fixture(t),old='b'.repeat(20);await fs.mkdir(path.join(f.home,'state'),{recursive:true});
+  await save(path.join(f.home,'current.json'),{version:old});await save(path.join(f.home,'state/connector.json'),{mode:'independent',token:'private-fixture-token'});
+  const updates={schema:1,kind:'github',repository:'example/remote',channel:'preview',publicKey:f.key.publicKey,sequence:f.manifest.sequence};
+  await save(path.join(f.packageRoot,'release.json'),{version:f.version,updates});
+  const written=[];
+  await installManagerPackage(f,{writeEntries:async(_home,options)=>written.push(options),cleanup:async()=>({removed:[],skipped:[]})});
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.home,'state/update-source.json'),'utf8')),updates);
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.home,'current.json'),'utf8')).version,old);assert.equal(written.length,1);
+  await save(path.join(f.packageRoot,'release.json'),{version:f.version,updates:{...updates,sequence:f.manifest.sequence+1}});
+  await assert.rejects(installManagerPackage(f,{writeEntries:async()=>assert.fail('Invalid source must fail before changes')}),/来源与发布签名不一致/);
+});
 test('a fresh EXE install uses the full independent installation without starting Codex or services',async t=>{
   const f=await fixture(t);let called=false;
   const result=await installManagerPackage({...f,noShortcut:true,mode:'fresh'},{installFresh:async(args,options)=>{called=true;assert.equal(args.mode,'independent');assert.equal(args.packageRoot,f.packageRoot);assert.equal(options.managerOptions.noShortcut,true);await options.launchConnector();}});

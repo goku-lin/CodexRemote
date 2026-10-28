@@ -11,6 +11,7 @@ import {promisify} from 'node:util';
 import {managerContext,managerStatus,managerAction,executorInventory,readManagerRequest} from '../src/launcher-manager.mjs';
 import {loadModelRouterConfig,listConfiguredModels,resolveModel} from '../src/model-router.mjs';
 import {entries} from '../src/connector-client.mjs';
+import {releaseSigningKey,signRelease} from '../src/connector-updates.mjs';
 
 const execute=promisify(execFile);
 async function fixture(t){
@@ -110,6 +111,19 @@ test('password can be set from the local manager without returning or logging th
   const saved=JSON.parse(await fs.readFile(path.join(context.dataDir,'maintenance-password.json'),'utf8'));
   assert.equal(saved.version,1); assert.equal(saved.hash.includes('123456'),false);
   await assert.rejects(managerAction({action:'set-password',password:'123456',confirmation:'654321'},context),/不一致/);
+});
+
+test('installed manager checks public release notes without service calls and installs only after confirmation',async t=>{
+  const f=await fixture(t),context=managerContext({root:f.root,home:f.root});await fs.mkdir(context.dataDir,{recursive:true});
+  const key=await releaseSigningKey(path.join(f.root,'publisher')),version='a'.repeat(20),filename='connector-'+version+'.zip';
+  const updates={schema:1,kind:'github',repository:'example/remote',channel:'preview',publicKey:key.publicKey,sequence:1};
+  await save(path.join(context.dataDir,'update-source.json'),updates);await save(path.join(f.root,'current.json'),{version:'b'.repeat(20)});
+  const manifest=signRelease({version,filename,size:100,sha256:'c'.repeat(64),sequence:2},key),base='https://github.com/example/remote/releases/download/v0.1.1/';
+  const result=await managerAction({action:'check-update'},context,{fetcher:async url=>url.startsWith('https://api.github.com/')?Response.json([{tag_name:'v0.1.1',name:'新版',body:'保留配对与设置',assets:[{name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},{name:filename,state:'uploaded',size:100,browser_download_url:base+filename}]}]):Response.json(manifest)});
+  assert.equal(result.update.status,'available');assert.equal(result.update.release.notes,'保留配对与设置');
+  let called=false;const options={run:async(_file,args)=>{called=true;assert.ok(args.includes('--install'));return {stdout:'已更新'};}};
+  await assert.rejects(managerAction({action:'update'},context,options),/先确认/);assert.equal(called,false);
+  assert.equal((await managerAction({action:'update',confirmNetwork:true},context,options)).message,'已更新');
 });
 
 test('a running desktop is kept, and a healthy service does not execute a startup or ingress recovery command',async t=>{

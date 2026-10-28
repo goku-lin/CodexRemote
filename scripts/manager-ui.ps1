@@ -31,7 +31,7 @@ $script:managerNode = if ($ConnectorHome) { Join-Path $ProjectRoot 'runtime\node
     <ItemsControl x:Name="HealthRows"><ItemsControl.ItemTemplate><DataTemplate><Border Background="#292E35" CornerRadius="8" Margin="0,0,0,7" Padding="14,11"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Label}" Foreground="#AAB5C4"/><TextBlock Grid.Column="1" Text="{Binding Message}"/></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
     <WrapPanel Margin="0,8,0,3"><Button x:Name="RecoverBtn" Content="恢复远程入口"/><Button x:Name="OpenLogsBtn" Content="打开服务日志目录"/></WrapPanel>
     <GroupBox Header="账号切换"><StackPanel><TextBlock x:Name="AccountSwitcherHint" Text="正在检查本机账号工具…" Foreground="#AAB5C4" Margin="0,0,0,10"/><Button x:Name="AccountSwitcherBtn" Content="打开账号切换" HorizontalAlignment="Left"/><TextBlock Text="切换时会重启 Codex 并中断桌面任务；Relay 保持运行，随后通过原生入口恢复远程接管。" Foreground="#9CA7B5"/></StackPanel></GroupBox>
-    <GroupBox Header="版本与更新"><StackPanel><TextBlock x:Name="VersionText" Text="正在读取版本…" Margin="0,0,0,12"/><WrapPanel><Button x:Name="CheckUpdateBtn" Content="检查连接器更新"/><Button x:Name="InstallUpdateBtn" Content="安装连接器更新"/></WrapPanel><TextBlock x:Name="UpdateHint" Foreground="#9CA7B5"/></StackPanel></GroupBox>
+    <GroupBox Header="版本与更新"><StackPanel><TextBlock x:Name="VersionText" Text="正在读取版本…" Margin="0,0,0,12"/><WrapPanel><Button x:Name="CheckUpdateBtn" Content="检查连接器更新"/><Button x:Name="InstallUpdateBtn" Content="安装连接器更新"/></WrapPanel><TextBlock x:Name="UpdateHint" Text="检查新版后可查看说明并选择安装；有任务运行时暂缓。" Foreground="#9CA7B5"/><TextBox x:Name="ReleaseNotes" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="200" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" Margin="0,10,0,0" Padding="10" Background="#181D23" Foreground="#E6E8EC" BorderBrush="#434B56"/></StackPanel></GroupBox>
    </StackPanel></ScrollViewer></TabItem>
    <TabItem Header="插件与执行器"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <StackPanel><TextBlock Text="本机委派执行器" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Claude Code、DSH 及模型路由。这里控制后续委派调用，不会结束正在运行的子任务。" Foreground="#9CA7B5" Margin="0,8,0,16"/></StackPanel>
@@ -174,7 +174,16 @@ $script:managerTimer.Add_Tick({
       $value=$task.Output.Result.Trim() | ConvertFrom-Json
       if (-not $value.ok) { throw $value.error }
       if ($task.Action -eq 'status') { Render-ManagerStatus $value.result; $script:managerLastStatus=[DateTime]::UtcNow; if ($VerifyStatusOnly) { $script:managerVerifyComplete=$true } }
-      else { Write-ManagerLog $value.result.message; $script:managerLastStatus=[DateTime]::UtcNow.AddSeconds(-20) }
+      else {
+        Write-ManagerLog $value.result.message
+        if ($task.Action -eq 'check-update') {
+          (Ui 'UpdateHint').Text=$value.result.message
+          $release=$value.result.update.release
+          (Ui 'ReleaseNotes').Visibility=if ($release) {'Visible'} else {'Collapsed'}
+          (Ui 'ReleaseNotes').Text=if ($release) {$release.name+"`r`n`r`n"+$release.notes} else {''}
+        }
+        $script:managerLastStatus=[DateTime]::UtcNow.AddSeconds(-20)
+      }
       (Ui 'OperationStatus').Text=if ($task.Action -eq 'status') {'状态已更新。窗口关闭后不再检查。'} else {'操作已返回，正在刷新状态。'}
     } catch { Write-ManagerLog $_.Exception.Message; (Ui 'OperationStatus').Text='操作未完成，具体原因见下方记录。'; $script:managerLastStatus=[DateTime]::UtcNow; if ($VerifyStatusOnly) { $script:managerVerificationError=$_.ToString(); $script:managerVerifyComplete=$true } }
     finally { $task.Process.Dispose(); foreach ($name in $script:managerControls) { (Ui $name).IsEnabled=$true } }

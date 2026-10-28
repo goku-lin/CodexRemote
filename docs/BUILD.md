@@ -32,8 +32,19 @@ npm run build
 | `CodexRemote-Setup-<版本>.exe` | 完整 Windows 安装器 |
 | `connector-<版本>.zip` | 便携内容和离线更新包 |
 | `candidate-<版本>.json` | 候选版本、哈希和签名清单 |
+| `update-manifest.json` | 随 EXE、ZIP 一起上传到同一 GitHub Release，供启动器校验更新 |
 
 公开构建不携带构建电脑的 IP、电脑名或局域网更新来源，也不更新现有 OTA 清单或重启服务。包内附带 Node.js、MIT 许可证、依赖声明及已打包 MPL 依赖的对应源码 ZIP。依赖详情见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
+
+## GitHub Releases 更新
+
+公开安装版使用 `package.json` 的 `codexRemote.updateRepository` 和 `updateChannel`。`preview` 包含正式版和预发布版，`stable` 仅正式版；自己维护分支时应改成自己的仓库。检查更新不下载完整安装包，点击安装后才下载 ZIP，并验证固定公钥的 Ed25519 签名和 SHA-256。没有登录 GitHub 的要求，也不会发送 Codex 账号或浏览器授权。
+
+每次发布需将同一批构建得到的 EXE、`connector-*.zip` 和 `update-manifest.json` 放在同一个 Release，写好更新说明后发布。草稿不会被启动器读取。v0.1.0 不具备 GitHub 更新能力，需先用新 EXE 在原安装目录修复一次；以后直接在启动器内检查并选择安装即可。
+
+**后续发布必须沿用同一签名密钥。** 本机构建默认使用 `.relay-data/release-signing-key.json`。在 GitHub 仓库的 Actions Secret 中设置 `CODEX_REMOTE_RELEASE_SIGNING_KEY`，值为该文件完整 JSON；不要提交文件、贴到 Issue 或放进 Release。普通 CI 的临时候选包不用于正式分发。
+
+发布前修改 `package.json` 与 `package-lock.json` 的版本，推送后在 Actions → **Build release** 输入对应标签（如 `v0.1.1`）。工作流测试并用 Secret 签名，生成带三个附件的预发布草稿；检查说明后再点击 Publish。没有配置 Secret 会停止发布，不会换一个密钥继续。
 
 ## 验证安装包
 

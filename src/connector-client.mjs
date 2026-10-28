@@ -74,7 +74,7 @@ export async function entries(home,{managerVersion,noShortcut=process.env.CODEX_
     "  & $clientNode $clientScript update --home $PSScriptRoot --archive $archivePath; exit $LASTEXITCODE",
     "}",
     "if ($connectorConfig.mode -eq 'independent' -and $Action -in @('launch','update') -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'state\\update-source.json'))) {",
-    "  & $clientNode $clientScript auto-update --home $PSScriptRoot",
+    "  if ($Action -eq 'update') { & $clientNode $clientScript auto-update --home $PSScriptRoot --install } else { & $clientNode $clientScript auto-update --home $PSScriptRoot }",
     "  if ($Action -eq 'update') { exit $LASTEXITCODE }",
     "  if ($LASTEXITCODE -ne 0) { Write-Host '更新检查未完成，继续启动已安装的版本。' }",
     "  $install = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'current.json') | ConvertFrom-Json",
@@ -305,23 +305,26 @@ async function activateUpdate(home,before,apply,{refresh=refreshEntries,stopRunn
     throw error;
   }
 }
-async function initializeUpdateSource(home){
+export async function initializeUpdateSource(home){
   if(await fs.access(path.join(home,'state','update-source.json')).then(()=>true,()=>false))return;
   const installed=await installation(home),metadata=await jsonFile(path.join(installed.directory,'release.json'));
   if(metadata.updates)await save(path.join(home,'state','update-source.json'),updateSource(metadata.updates));
 }
 export async function autoUpdate(home,options={}){
   try{
+    await initializeUpdateSource(home);
     const settings=await jsonFile(path.join(home,'state','update-source.json')).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
     if(!settings)return {status:'disabled'};
     return await withUpdateLock(home,async()=>{
       const before=await installation(home);
       if(before.config.mode!=='independent')return {status:'disabled'};
       const source=updateSource(await jsonFile(path.join(home,'state','update-source.json')));
-      const {url,manifest}=await availableRelease(source,options);
+      const release=await availableRelease(source,options),{url,manifest}=release;
+      if(release.status==='empty')return {status:'empty'};
       // Remember the highest signed publication even if its download fails.
       await save(path.join(home,'state','update-source.json'),{...source,sequence:manifest.sequence});
       if(manifest.version===before.current.version)return {status:'current',version:manifest.version};
+      if(source.kind==='github' && options.install!==true)return {status:'available',version:manifest.version,release:release.release};
       const busy=options.activeWork || activeWork;
       if(await busy(before.config))return {status:'deferred',version:manifest.version};
       options.onProgress?.('发现新版，正在下载并校验…');
@@ -399,9 +402,10 @@ if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.
     else if(action==='update')await update(home,process.argv.includes('--archive') ? process.argv[process.argv.indexOf('--archive')+1] : null);
     else if(action==='entries')await entries(home);
     else if(action==='auto-update'){
-      console.log('正在检查局域网更新…');
-      const result=await autoUpdate(home,{onProgress:message=>console.log(message)});
-      console.log(result.status==='updated' ? '已自动更新到 '+result.version+'。当前 Codex 任务保留，桌面代理在下次正常启动时更新。' : result.status==='deferred' ? '发现新版，当前仍有任务运行或等待处理。继续使用当前版本，下次空闲时启动会再检查更新。' : result.status==='current' ? '连接器已经是最新发布版本。' : result.status==='disabled' ? '尚未配置自动更新来源，可使用「从安装包更新.cmd」。' : '自动更新暂不可用，继续使用已安装版本：'+result.message);
+      console.log('正在检查连接器更新…');
+      const result=await autoUpdate(home,{install:process.argv.includes('--install'),onProgress:message=>console.log(message)});
+      console.log(result.status==='updated' ? '已更新到 '+result.version+'。Codex 桌面保持运行，桌面代理在下次正常启动时更新。' : result.status==='available' ? '发现 '+result.release.name+'，请在管理程序「版本与更新」查看说明并选择安装。' : result.status==='deferred' ? '发现新版，当前仍有任务运行或等待处理。请在空闲时点击安装更新。' : result.status==='current' ? '连接器已经是最新发布版本。' : result.status==='empty' ? '暂无支持自动更新的发布版本。' : result.status==='disabled' ? '尚未配置自动更新来源，可使用「从安装包更新.cmd」。' : '更新暂不可用，继续使用已安装版本：'+result.message);
+      if(result.status==='unavailable')process.exitCode=1;
     }
     else if(action==='independent')await switchIndependent(home,{port:process.argv.includes('--port') ? process.argv[process.argv.indexOf('--port')+1] : 4317});
     else if(action==='run')await run(home);
