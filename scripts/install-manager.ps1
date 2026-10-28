@@ -2,24 +2,15 @@
 $ErrorActionPreference='Stop'
 $HomeDirectory=[IO.Path]::GetFullPath($HomeDirectory)
 if (-not $SourceDirectory) { $SourceDirectory=Join-Path $HomeDirectory 'src' }
-$prebuilt=Join-Path $SourceDirectory 'manager-host.exe'
+$prebuilt=Join-Path $SourceDirectory 'manager-launcher.exe'
 $shortcutArguments=''
-function Manager-Digest([string]$File) {
-  $hash=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::OpenRead($File)
-  try { return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-','').ToLowerInvariant() }
-  finally { $stream.Dispose();$hash.Dispose() }
-}
 if (Test-Path -LiteralPath $prebuilt) {
-  $digest=(Manager-Digest $prebuilt).Substring(0,20)
-  $hostDirectory=Join-Path $HomeDirectory ('manager-hosts\'+$digest)
-  New-Item -ItemType Directory -Force -Path $hostDirectory | Out-Null
-  $target=Join-Path $hostDirectory 'CodexRemote.exe'
-  if (-not (Test-Path -LiteralPath $target)) { Copy-Item -LiteralPath $prebuilt -Destination $target }
-  elseif ((Manager-Digest $target) -ne (Manager-Digest $prebuilt)) { throw 'EXE 文件校验失败，未修改快捷方式。' }
-  $shortcutArguments='--home "'+$HomeDirectory.TrimEnd('\')+'"'
-  $compatibility=Join-Path $HomeDirectory 'CodexRemote.exe'
-  if (-not (Test-Path -LiteralPath $compatibility)) { Copy-Item -LiteralPath $prebuilt -Destination $compatibility }
+  $target=Join-Path $HomeDirectory 'CodexRemote.exe'
+  $temporary=Join-Path $HomeDirectory ('CodexRemote.'+$PID+'.exe')
+  try { Copy-Item -LiteralPath $prebuilt -Destination $temporary; Move-Item -LiteralPath $temporary -Destination $target -Force }
+  finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary } }
 } else {
+  if ((Split-Path -Leaf $SourceDirectory) -eq 'app') { throw '应用文件不完整，请重新下载完整安装包。' }
   # Developer checkout only. Portable installs always ship the built EXE.
   $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
   $target=Join-Path $HomeDirectory 'CodexRemote.exe'
@@ -33,9 +24,6 @@ if (Test-Path -LiteralPath $prebuilt) {
 }
 if (-not $NoShortcut) {
   $shortcutPath=Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex远程.lnk'
-  $backupDirectory=Join-Path $HomeDirectory '.manager-backups'
-  New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
-  if ((Test-Path -LiteralPath $shortcutPath) -and -not (Test-Path -LiteralPath (Join-Path $backupDirectory 'Codex远程-original.lnk'))) { Copy-Item -LiteralPath $shortcutPath -Destination (Join-Path $backupDirectory 'Codex远程-original.lnk') }
   $shell=New-Object -ComObject WScript.Shell
   $shortcut=$shell.CreateShortcut($shortcutPath)
   $shortcut.TargetPath=$target; $shortcut.Arguments=$shortcutArguments; $shortcut.WorkingDirectory=$HomeDirectory

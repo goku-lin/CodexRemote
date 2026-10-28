@@ -19,6 +19,14 @@ export async function buildManagerHost(root){
     return await fs.readFile(output);
   }finally{if(path.dirname(directory)!==path.resolve(os.tmpdir()))throw new Error('Build cleanup path');await fs.rm(directory,{recursive:true,force:true});}
 }
+export async function buildManagerLauncher(root){
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'codex-launcher-build-'));
+  try{
+    const output=path.join(directory,'CodexRemote.exe');
+    await exec(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/optimize+','/codepage:65001','/win32icon:'+await iconFile(root,path.join(directory,'app.ico')),'/r:System.Windows.Forms.dll','/r:System.Web.Extensions.dll','/out:'+output,path.join(root,'src/manager-launcher.cs')],{windowsHide:true,timeout:15000});
+    return await fs.readFile(output);
+  }finally{if(path.dirname(directory)!==path.resolve(os.tmpdir()))throw new Error('Build cleanup path');await fs.rm(directory,{recursive:true,force:true});}
+}
 export async function buildManagerSetup(root,{archive,manifest,publicKey,output}){
   const manifestFile=output+'.manifest.json';
   try{

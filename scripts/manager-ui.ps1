@@ -29,9 +29,10 @@ $script:managerNode = if ($ConnectorHome) { Join-Path $ProjectRoot 'runtime\node
     <WrapPanel><Button x:Name="StartDesktopBtn" Content="启动 Codex + 服务" Background="#62DDB0" Foreground="#10241D"/><Button x:Name="StartServiceBtn" Content="仅启动服务"/><Button x:Name="OpenWebBtn" Content="打开对话网页 ↗"/></WrapPanel>
     <TextBlock Text="窗口关闭后服务继续运行。已打开的 Codex 会保留当前任务。" Foreground="#9CA7B5" Margin="0,0,0,17"/>
     <ItemsControl x:Name="HealthRows"><ItemsControl.ItemTemplate><DataTemplate><Border Background="#292E35" CornerRadius="8" Margin="0,0,0,7" Padding="14,11"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Label}" Foreground="#AAB5C4"/><TextBlock Grid.Column="1" Text="{Binding Message}"/></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
-    <WrapPanel Margin="0,8,0,3"><Button x:Name="RecoverBtn" Content="恢复远程入口"/><Button x:Name="OpenLogsBtn" Content="打开服务日志目录"/></WrapPanel>
+    <WrapPanel Margin="0,8,0,3"><Button x:Name="ExternalBtn" Content="配置外网访问"/><Button x:Name="RecoverBtn" Content="恢复连接"/><Button x:Name="OpenLogsBtn" Content="打开日志"/></WrapPanel>
+    <TextBlock Text="外网访问需先安装并登录 Tailscale；配置和连接恢复均可在这里完成。" Foreground="#9CA7B5" Margin="0,0,0,14"/>
     <GroupBox Header="账号切换"><StackPanel><TextBlock x:Name="AccountSwitcherHint" Text="正在检查本机账号工具…" Foreground="#AAB5C4" Margin="0,0,0,10"/><Button x:Name="AccountSwitcherBtn" Content="打开账号切换" HorizontalAlignment="Left"/><TextBlock Text="切换时会重启 Codex 并中断桌面任务；Relay 保持运行，随后通过原生入口恢复远程接管。" Foreground="#9CA7B5"/></StackPanel></GroupBox>
-    <GroupBox Header="版本与更新"><StackPanel><TextBlock x:Name="VersionText" Text="正在读取版本…" Margin="0,0,0,12"/><WrapPanel><Button x:Name="CheckUpdateBtn" Content="检查连接器更新"/><Button x:Name="InstallUpdateBtn" Content="安装连接器更新"/></WrapPanel><TextBlock x:Name="UpdateHint" Text="检查新版后可查看说明并选择安装；有任务运行时暂缓。" Foreground="#9CA7B5"/><TextBox x:Name="ReleaseNotes" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="200" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" Margin="0,10,0,0" Padding="10" Background="#181D23" Foreground="#E6E8EC" BorderBrush="#434B56"/></StackPanel></GroupBox>
+    <GroupBox Header="版本与更新"><StackPanel><TextBlock x:Name="VersionText" Text="正在读取版本…" Margin="0,0,0,12"/><WrapPanel><Button x:Name="CheckUpdateBtn" Content="检查更新"/><Button x:Name="InstallUpdateBtn" Content="更新应用"/></WrapPanel><TextBlock x:Name="UpdateHint" Text="检查新版后可查看说明并选择安装；有任务运行时暂缓。" Foreground="#9CA7B5"/><TextBox x:Name="ReleaseNotes" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="200" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" Margin="0,10,0,0" Padding="10" Background="#181D23" Foreground="#E6E8EC" BorderBrush="#434B56"/></StackPanel></GroupBox>
    </StackPanel></ScrollViewer></TabItem>
    <TabItem Header="插件与执行器"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <StackPanel><TextBlock Text="本机委派执行器" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Claude Code、DSH 及模型路由。这里控制后续委派调用，不会结束正在运行的子任务。" Foreground="#9CA7B5" Margin="0,8,0,16"/></StackPanel>
@@ -67,7 +68,7 @@ $script:managerLastStatus = [DateTime]::UtcNow.AddSeconds(-20)
 $script:managerClosing = $false
 $script:managerVerifyStarted = [DateTime]::UtcNow
 $script:managerVerificationError = $null
-$script:managerControls = @('StartDesktopBtn','StartServiceBtn','CheckUpdateBtn','InstallUpdateBtn','RecoverBtn','RestartBtn','EnableExecutorBtn','DisableExecutorBtn','RefreshBtn','AccountSwitcherBtn')
+$script:managerControls = @('StartDesktopBtn','StartServiceBtn','CheckUpdateBtn','InstallUpdateBtn','ExternalBtn','RecoverBtn','RestartBtn','EnableExecutorBtn','DisableExecutorBtn','RefreshBtn','AccountSwitcherBtn')
 function Write-ManagerLog([string]$text) {
   $box = Ui 'ActivityLog'
   $lines = @($box.Text -split "`r?`n" | Select-Object -Last 70)
@@ -133,8 +134,9 @@ function Open-ManagerPath([string]$path) {
   Start-Process ('http://127.0.0.1:' + $port + '/')
 })
 (Ui 'CheckUpdateBtn').Add_Click({ Manager-Request @{action='check-update'} })
-(Ui 'InstallUpdateBtn').Add_Click({ if (Confirm-Network '将检查并安装连接器更新；有运行任务时会暂缓。') { Manager-Request @{action='update';confirmNetwork=$true} } })
+(Ui 'InstallUpdateBtn').Add_Click({ if (Confirm-Network '将检查并更新应用；有运行任务时会暂缓。') { Manager-Request @{action='update';confirmNetwork=$true} } })
 (Ui 'RecoverBtn').Add_Click({ if (Confirm-Network '将恢复远程入口，不重启 Codex。') { Manager-Request @{action='recover';confirmNetwork=$true} } })
+(Ui 'ExternalBtn').Add_Click({ if (Confirm-Network '将配置此电脑的 Tailscale 外网访问。') { Manager-Request @{action='configure-external';confirmNetwork=$true} } })
 (Ui 'OpenLogsBtn').Add_Click({ Open-ManagerPath $script:managerData })
 (Ui 'AccountSwitcherBtn').Add_Click({ Manager-Request @{action='open-account-switcher'} })
 (Ui 'EnableExecutorBtn').Add_Click({ $row=(Ui 'ExecutorsGrid').SelectedItem; if ($row) { Manager-Request @{action='toggle-executor';id=$row.id;enabled=$true} } else { Write-ManagerLog '请先选择一个执行器。' } })

@@ -67,5 +67,5 @@ test('Windows process inventory recognizes a real running version without return
     if(/Process inventory incomplete/.test(error.stderr||'')){t.skip('Windows hides process details; production cleanup correctly refuses to delete');return;}
     throw error;
   }
-  assert.ok(result.versions.includes(a.version));assert.deepEqual(Object.keys(result).sort(),['hosts','versions']);
+  assert.ok(result.versions.includes(a.version));assert.deepEqual(Object.keys(result),['versions']);
 });

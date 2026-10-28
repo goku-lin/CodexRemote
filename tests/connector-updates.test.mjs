@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
-import {createArchive} from '../src/connector-archive.mjs';
+import {applicationArchive as createArchive,writeApplicationFixture} from './application-fixture.mjs';
 import {buildRelease} from '../src/connector-release.mjs';
 import {autoUpdate,entries,install,ensureStableRuntime} from '../src/connector-client.mjs';
 import {releaseSigningKey,signRelease,verifyRelease,updateSource,updateUrl,lanUpdateRequest,availableRelease,downloadRelease} from '../src/connector-updates.mjs';
@@ -27,7 +27,7 @@ async function fixture(t){
   await fs.writeFile(path.join(state,'old-native-proxy.exe'),'running bridge sentinel');
   const key=await releaseSigningKey(path.join(directory,'publisher'));
   const bytes=createArchive([{name:'release.json',bytes:Buffer.from(JSON.stringify({version}))},{name:'runtime/node.exe',bytes:Buffer.from('MZfixture')},{name:'app/connector-client.mjs',bytes:Buffer.from('//fixture')}]);
-  let manifest=signRelease({version,filename:'connector-'+version+'.zip',sha256:crypto.createHash('sha256').update(bytes).digest('hex'),size:bytes.length,sequence:2},key),corrupt=false,downloads=0;
+  let manifest=signRelease({version,filename:'CodexRemote-Portable-v0.2.0-win-x64.zip',sha256:crypto.createHash('sha256').update(bytes).digest('hex'),size:bytes.length,sequence:2},key),corrupt=false,downloads=0;
   const server=createServer((req,res)=>{
     if(req.url.endsWith('/manifest')){res.setHeader('content-type','application/json');res.end(JSON.stringify(manifest));return;}
     downloads++;const payload=corrupt ? Buffer.from('corrupt package') : bytes;res.setHeader('content-length',String(payload.length));res.end(payload);
@@ -44,7 +44,7 @@ test('release signatures survive publisher restart, reject foreign publishers, t
   const directory=await folder(t),key=await releaseSigningKey(directory),again=await releaseSigningKey(directory);
   assert.equal(key.publicKey,again.publicKey);
   const source={schema:1,publicKey:key.publicKey,urls:['http://192.168.1.10:4317'],sequence:4};
-  const manifest=signRelease({version:'a'.repeat(20),filename:'connector-'+ 'a'.repeat(20)+'.zip',size:100,sha256:'b'.repeat(64),sequence:4},key);
+  const manifest=signRelease({version:'a'.repeat(20),filename:'CodexRemote-Portable-v0.2.0-win-x64.zip',size:100,sha256:'b'.repeat(64),sequence:4},key);
   assert.equal(verifyRelease(manifest,source).version,manifest.version);
   assert.throws(()=>verifyRelease({...manifest,sha256:'c'.repeat(64)},source),/签名/);
   const other=await releaseSigningKey(path.join(directory,'other'));
@@ -113,20 +113,19 @@ test('manifest probes have a timeout, accept only the pinned key, and remember n
   t.after(async()=>{silent.closeAllConnections();await new Promise(resolve=>silent.close(resolve));});
   const began=Date.now();await assert.rejects(()=>availableRelease({...source,urls:['http://127.0.0.1:'+silent.address().port]},{timeout:60}));assert.ok(Date.now()-began<1000);
   f.corrupt=true;await autoUpdate(f.home,f.options);
-  f.manifest=signRelease({version:f.old,filename:'connector-'+f.old+'.zip',size:1,sha256:'a'.repeat(64),sequence:1},f.key);
+  f.manifest=signRelease({version:f.old,filename:'CodexRemote-Portable-v0.1.0-win-x64.zip',size:1,sha256:'a'.repeat(64),sequence:1},f.key);
   const result=await autoUpdate(f.home,f.options);assert.equal(result.status,'unavailable');assert.equal(f.downloads,1);assert.equal((await f.pointer()).version,f.old);
 });
 
 test('fresh installation remembers the packaged update source without an extra pairing step',{skip:process.platform!=='win32'},async t=>{
   const f=await fixture(t),packageRoot=path.join(f.directory,'package'),home=path.join(f.directory,'new-home');
-  await fs.mkdir(path.join(packageRoot,'runtime'),{recursive:true});await fs.mkdir(path.join(packageRoot,'app'));
-  await fs.writeFile(path.join(packageRoot,'runtime','node.exe'),'MZfixture');
   const updates=await json(path.join(f.state,'update-source.json'));
-  await save(path.join(packageRoot,'release.json'),{version:f.version,updates});
+  await writeApplicationFixture(packageRoot,{version:f.version,updates});
   await install({home,name:'个人笔记本',workspace:f.directory,packageRoot},{prepareVersion:async()=>{},launchConnector:async()=>{}});
   assert.deepEqual(await json(path.join(home,'state','update-source.json')),updates);
-  await fs.access(path.join(home,'从安装包更新.cmd'));
-  assert.match(await fs.readFile(path.join(home,'connector-entry.ps1'),'utf8'),/auto-update --home/);
+  await fs.access(path.join(home,'CodexRemote.exe'));
+  await fs.access(path.join(home,'runtime','manager.ps1'));
+  assert.equal((await fs.readdir(home)).some(name=>/\.cmd$/i.test(name)),false);
 });
 
 test('the long-lived Relay service uses one stable Node path across versioned updates',async t=>{
@@ -161,7 +160,7 @@ async function githubFixture(t){
   const f=await fixture(t),repository='example/remote',tag='v0.1.1',base='https://github.com/'+repository+'/releases/download/'+tag+'/';
   const source={schema:1,kind:'github',repository,channel:'preview',publicKey:f.key.publicKey,sequence:1};
   await save(path.join(f.state,'update-source.json'),source);
-  const manifest=signRelease({version:f.version,filename:'connector-'+f.version+'.zip',size:f.bytes.length,sha256:crypto.createHash('sha256').update(f.bytes).digest('hex'),sequence:2},f.key);
+  const manifest=signRelease({version:f.version,filename:'CodexRemote-Portable-v0.2.0-win-x64.zip',size:f.bytes.length,sha256:crypto.createHash('sha256').update(f.bytes).digest('hex'),sequence:2},f.key);
   const release={tag_name:tag,name:'版本 0.1.1',body:'更新说明\n保留配置',draft:false,prerelease:true,assets:[
     {id:1,name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},
     {id:2,name:manifest.filename,state:'uploaded',size:f.bytes.length,browser_download_url:base+manifest.filename}
@@ -242,7 +241,7 @@ test('the live publisher serves signed releases without a browser grant and reje
   t.after(async()=>{if(child.exitCode===null){const ended=new Promise(resolve=>child.once('exit',resolve));child.stdin.end();const timer=setTimeout(()=>child.kill(),3000);await ended;clearTimeout(timer);}});
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('publisher startup timeout')),8000);child.on('error',reject);child.stdout.on('data',data=>{if(String(data).includes('listening')){clearTimeout(timer);resolve();}});child.stderr.resume();});
   const version='a'.repeat(20),bytes=Buffer.from('fixture package'),key=await releaseSigningKey(directory);
-  const manifest=signRelease({version,filename:'connector-'+version+'.zip',sha256:crypto.createHash('sha256').update(bytes).digest('hex'),size:bytes.length,sequence:1},key);
+  const manifest=signRelease({version,filename:'CodexRemote-Portable-v0.2.0-win-x64.zip',sha256:crypto.createHash('sha256').update(bytes).digest('hex'),size:bytes.length,sequence:1},key);
   await fs.mkdir(path.join(directory,'releases'));await fs.writeFile(path.join(directory,'releases',manifest.filename),bytes);await save(path.join(directory,'releases','latest.json'),manifest);
   const base='http://127.0.0.1:'+port,source={schema:1,publicKey:key.publicKey,urls:[base],sequence:1};
   assert.equal((await availableRelease(source)).manifest.version,version);

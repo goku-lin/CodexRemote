@@ -122,15 +122,24 @@ export async function managerAction(request,context,options={}){
         const runtime=await localRequest(context,'/api/runtime',null,options);
         if(Number(runtime.chatgptRevision || 0)>=2 && Number(runtime.remoteBrowserRevision || 0)>=3)return {message:'后台已在运行，无需重复启动。'};
       }catch{}
-      return context.home?runScript(path.join(context.home,'connector-entry.ps1'),['start'],context,run):runScript(path.join(context.root,'scripts','启动远程服务.ps1'),['-NoBrowser','-Quiet'],context,run);
+      return context.home?runScript(path.join(context.home,'runtime','service.ps1'),['start'],context,run):runScript(path.join(context.root,'scripts','启动远程服务.ps1'),['-NoBrowser','-Quiet'],context,run);
     }
     case 'start-desktop':{
+      await managerAction({action:'start-service'},context,options);
       // Refuse to launch an unverified existing desktop rather than terminate it.
       const result=await run('powershell.exe',['-NoProfile','-NonInteractive','-Command',"@(Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*\\WindowsApps\\OpenAI.Codex_*\\app\\ChatGPT.exe' }).Count"],{windowsHide:true,timeout:8000});
       if(Number(result.stdout.trim())>0)return {message:'Codex 已打开，保留当前任务。若桌面尚未接管，请等任务结束后正常关闭，再点此按钮启动。'};
       if(request.confirmNetwork!==true)throw new Error('启动入口准备远程连接时可能短暂重连公网，请先确认。');
-      const file=context.home?path.join(context.app,'打开原生桌面连接.ps1'):path.join(context.root,'scripts','打开原生桌面连接.ps1');
+      await run(process.execPath,[path.join(context.app,'native-desktop-setup.mjs'),'prepare'],{cwd:context.home || context.root,windowsHide:true,timeout:60000,env:{...process.env,CODEX_RELAY_DATA_DIR:context.dataDir,...(context.home?{CODEX_RELAY_CONNECTOR_HOME:context.home,CODEX_RELAY_RELEASE_ID:path.basename(context.root)}:{})}});
+      const file=context.home?path.join(context.dataDir,'desktop-launch-'+path.basename(context.root)+'.ps1'):path.join(context.root,'scripts','打开原生桌面连接.ps1');
       return runScript(file,[],context,run);
+    }
+    case 'configure-external':{
+      if(request.confirmNetwork!==true)throw new Error('外网配置可能让网页短暂重连，请先确认。');
+      await managerAction({action:'start-service'},context,options);
+      const port=context.home?(await json(path.join(context.dataDir,'connector.json'))).port || 4317:4317;
+      const result=await run(process.execPath,[path.join(context.app,'private-access.mjs'),'--hybrid'],{cwd:context.home || context.root,windowsHide:true,timeout:150000,maxBuffer:262144,env:{...process.env,CODEX_RELAY_DATA_DIR:context.dataDir,PORT:String(port)}});
+      return {message:result.stdout.trim()};
     }
     default:throw new Error('不支持的管理操作。');
   }

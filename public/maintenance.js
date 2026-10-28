@@ -23,7 +23,7 @@ export function setupMaintenance({api,onRecovered=()=>{}}){
     const running=activeStates.has(info?.job?.state),scope=$('maintenanceScope').value;
     $('maintenanceConfirmRow').classList.toggle('hidden',scope!=='desktop');
     $('maintenanceScopeHint').textContent=scope==='desktop'?'强制关闭 Codex 及其子进程，再通过原生入口打开。这台电脑所有对话的运行任务都会中断，未完成的命令需要核对后继续。':'网页会短暂断线；Codex 桌面保持运行。由远程服务自身启动的任务可能中断。';
-    $('maintenancePasswordHint').textContent=info?.passwordConfigured?'密码只能在 Codex 电脑本机修改；网页仅校验密码。':'请先在运行 Codex 的电脑双击「设置重启密码.cmd」，设置后点“刷新状态”。';
+    $('maintenancePasswordHint').textContent=info?.passwordConfigured?'密码只能在 Codex 电脑本机修改；网页仅校验密码。':'请在本机 Codex Remote 的「重启与恢复」中设置密码，再刷新状态。';
     $('maintenanceLocalSetup').classList.toggle('hidden',!info?.passwordSetupPath);
     $('maintenanceSetupPath').textContent=info?.passwordSetupPath || '';
     $('maintenanceScope').disabled=busy||running||Boolean(pending);

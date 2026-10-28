@@ -21,7 +21,7 @@ test('only local password files enable restart; paired browsers have no password
   const info=(await send('/api/phone')).json,pair=await send('/api/access/pair',{headers:remote,body:{code:info.code}}),paired={...remote,cookie:pair.headers['set-cookie'][0].split(';')[0]};
   assert.equal((await send('/api/maintenance',{headers:paired})).json.passwordConfigured,false);
   assert.equal((await send('/api/maintenance',{headers:paired})).json.passwordSetupPath,undefined);
-  assert.equal((await send('/api/maintenance')).json.passwordSetupPath,path.resolve('设置重启密码.cmd'));
+  assert.equal((await send('/api/maintenance')).json.passwordSetupPath,path.resolve('CodexRemote.exe'));
   for(const headers of [paired,{}]){
     assert.equal((await send('/api/maintenance/password',{headers,body:{password:'remote-set-password'}})).status,404);
     assert.equal((await send('/api/maintenance/password',{headers,method:'DELETE'})).status,404);

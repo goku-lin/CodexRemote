@@ -1,6 +1,6 @@
 {
   "name": "codex-relay",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "codexRemote": {
     "updateRepository": "goku-lin/CodexRemote",
     "updateChannel": "preview"
@@ -10,6 +10,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "manager:install": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-manager.ps1",
+    "manager": "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File ./scripts/manager-ui.ps1",
     "start": "node start.mjs",
     "runner": "node start.mjs --runner",
     "delegate-mcp": "node src/delegate-mcp.mjs",

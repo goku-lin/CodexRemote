@@ -47,7 +47,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          $files = @(Get-ChildItem .relay-data/releases/CodexRemote-Setup-*.exe, .relay-data/releases/connector-*.zip, .relay-data/releases/update-manifest.json | ForEach-Object { $_.FullName })
+          $files = @(Get-ChildItem .relay-data/releases/CodexRemote-Setup-*.exe, .relay-data/releases/CodexRemote-Portable-*.zip, .relay-data/releases/update-manifest.json | ForEach-Object { $_.FullName })
           if ($files.Count -ne 3) { throw 'Expected EXE, ZIP and signed update manifest' }
           gh release create $env:RELEASE_TAG @files --target $env:GITHUB_SHA --title $env:RELEASE_TAG --draft --prerelease --generate-notes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

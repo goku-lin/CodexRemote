@@ -48,10 +48,10 @@ export async function runningInstallationReferences(home){
   if(process.platform!=='win32')throw new Error('Process inventory unavailable');
   // Only return identifiers within this installation, never process arguments
   // (which can contain authentication data).
-  const command=`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $root=$env:CODEX_STORAGE_HOME.TrimEnd('\\')+'\\'; $v=@(); $h=@(); foreach($p in Get-CimInstance Win32_Process) { if($p.Name -notmatch '^(node|ChatGPT|CodexRemote|codex-native-proxy.*)\\.exe$'){continue}; if(-not $p.ExecutablePath -or -not $p.CommandLine){throw 'Process inventory incomplete'}; $text=([string]$p.ExecutablePath)+' '+([string]$p.CommandLine); foreach($m in [regex]::Matches($text,[regex]::Escape($root)+'versions\\\\([a-f0-9]{20})(?=[\\\\/"\\s]|$)')){$v+=$m.Groups[1].Value}; foreach($m in [regex]::Matches($text,[regex]::Escape($root)+'state\\\\codex-native-proxy-([a-f0-9]{20})\\.exe')){$v+=$m.Groups[1].Value}; foreach($m in [regex]::Matches($text,[regex]::Escape($root)+'manager-hosts\\\\([a-f0-9]{20})(?=[\\\\/"\\s]|$)')){$h+=$m.Groups[1].Value} }; @{versions=@($v);hosts=@($h)} | ConvertTo-Json -Compress`;
+  const command="$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $root=$env:CODEX_STORAGE_HOME.TrimEnd('\\')+'\\'; $v=@(); foreach($p in Get-CimInstance Win32_Process) { if($p.Name -notmatch '^(node|ChatGPT|CodexRemote|manager-host|codex-native-proxy.*)\\.exe$'){continue}; if(-not $p.ExecutablePath -or -not $p.CommandLine){throw 'Process inventory incomplete'}; $text=([string]$p.ExecutablePath)+' '+([string]$p.CommandLine); foreach($m in [regex]::Matches($text,[regex]::Escape($root)+'versions\\\\([a-f0-9]{20})(?=[\\\\/\"\\s]|$)')){$v+=$m.Groups[1].Value}; foreach($m in [regex]::Matches($text,[regex]::Escape($root)+'state\\\\codex-native-proxy-([a-f0-9]{20})\\.exe')){$v+=$m.Groups[1].Value} }; @{versions=@($v)} | ConvertTo-Json -Compress";
   const {stdout}=await promisify(execFile)('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,timeout:15000,env:{...process.env,CODEX_STORAGE_HOME:home}});
   const result=JSON.parse(stdout.replace(/^\ufeff/,''));
-  if(!Array.isArray(result.versions)||!Array.isArray(result.hosts))throw new Error('Process inventory invalid');
+  if(!Array.isArray(result.versions))throw new Error('Process inventory invalid');
   return result;
 }
 export async function cleanupManagedReleases(home,{references=runningInstallationReferences,keep=[]}={}){
@@ -64,7 +64,7 @@ export async function cleanupManagedReleases(home,{references=runningInstallatio
     if(value&&!versionPattern.test(value.version))throw new Error('Release selection invalid');
     if(value)protectedVersions.add(value.version);
   }
-  // No process snapshot means no deletion. Leave a later repair/update to retry.
+  // No process snapshot means no deletion. A later update can retry.
   let active;try{active=await references(home);}catch{return {removed,skipped:['process-inventory-unavailable']};}
   for(const version of active.versions)protectedVersions.add(version);
   const candidates=[];

@@ -12,6 +12,7 @@ import {managerContext,managerStatus,managerAction,executorInventory,readManager
 import {loadModelRouterConfig,listConfiguredModels,resolveModel} from '../src/model-router.mjs';
 import {entries} from '../src/connector-client.mjs';
 import {releaseSigningKey,signRelease} from '../src/connector-updates.mjs';
+import {writeApplicationFixture} from './application-fixture.mjs';
 
 const execute=promisify(execFile);
 async function fixture(t){
@@ -115,7 +116,7 @@ test('password can be set from the local manager without returning or logging th
 
 test('installed manager checks public release notes without service calls and installs only after confirmation',async t=>{
   const f=await fixture(t),context=managerContext({root:f.root,home:f.root});await fs.mkdir(context.dataDir,{recursive:true});
-  const key=await releaseSigningKey(path.join(f.root,'publisher')),version='a'.repeat(20),filename='connector-'+version+'.zip';
+  const key=await releaseSigningKey(path.join(f.root,'publisher')),version='a'.repeat(20),filename='CodexRemote-Portable-v0.2.0-win-x64.zip';
   const updates={schema:1,kind:'github',repository:'example/remote',channel:'preview',publicKey:key.publicKey,sequence:1};
   await save(path.join(context.dataDir,'update-source.json'),updates);await save(path.join(f.root,'current.json'),{version:'b'.repeat(20)});
   const manifest=signRelease({version,filename,size:100,sha256:'c'.repeat(64),sequence:2},key),base='https://github.com/example/remote/releases/download/v0.1.1/';
@@ -155,34 +156,16 @@ test('PowerShell startup preserves Chinese output, literal paths and switch para
   });
 });
 
-test('connector manager entry resolves current version at each launch, and supports installation outside the working directory',async t=>{
-  const context=await fixture(t);await entries(context.root);
-  const entry=await fs.readFile(path.join(context.root,'管理应用入口.ps1'),'utf8');
-  assert.match(entry,/current\.json/);assert.match(entry,/-ConnectorHome \$PSScriptRoot/);assert.match(entry,/param\(\[switch\]\$Install,/);
-  assert.match(await fs.readFile(path.join(context.root,'安装管理应用.cmd'),'utf8'),/%~dp0管理应用入口\.ps1/);
-});
-
-test('generated manager entry executes the selected branch and follows OTA versions without switch-variable collisions',{skip:process.platform!=='win32'},async t=>{
-  const context=await fixture(t);await entries(context.root);
-  const quote=value=>"'"+value.replaceAll("'","''")+"'",receipt=path.join(context.root,'manager-receipt.json');
-  const launch=flags=>execute('powershell.exe',['-NoProfile','-STA','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(context.root,'管理应用入口.ps1'),...flags],{windowsHide:true,timeout:15000,cwd:os.tmpdir()});
+test('the internal manager entry follows the selected application version without legacy entry points',{skip:process.platform!=='win32'},async t=>{
+  const context=await fixture(t),receipt=path.join(context.root,'manager-receipt.json'),quote=value=>"'"+value.replaceAll("'","''")+"'";
   for(const version of ['a'.repeat(20),'b'.repeat(20)]){
-    const versionRoot=path.join(context.root,'versions',version),app=path.join(versionRoot,'app');
-    await fs.mkdir(app,{recursive:true});await save(path.join(context.root,'current.json'),{version});
-    await fs.writeFile(path.join(app,'manager-ui.ps1'),'\ufeff'+`param($ProjectRoot,$ConnectorHome,[switch]$ValidateOnly,[switch]$VerifyStatusOnly)\r\n@{branch='open';root=$ProjectRoot;home=$ConnectorHome;validate=[bool]$ValidateOnly} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath ${quote(receipt)}`);
-    await fs.writeFile(path.join(app,'install-manager.ps1'),'\ufeff'+`param($HomeDirectory,$SourceDirectory,[switch]$NoShortcut)\r\n@{branch='install';home=$HomeDirectory;source=$SourceDirectory;noShortcut=[bool]$NoShortcut} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath ${quote(receipt)}`);
-    await launch(['-ValidateOnly']);
+    const {app}=await writeApplicationFixture(context.root,{version});await entries(context.root);
+    await fs.writeFile(path.join(app,'manager-ui.ps1'),'\ufeff'+"param($ProjectRoot,$ConnectorHome,[switch]$ValidateOnly,[switch]$VerifyStatusOnly)\r\n@{root=$ProjectRoot;home=$ConnectorHome;validate=[bool]$ValidateOnly} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath "+quote(receipt));
+    await execute('powershell.exe',['-NoProfile','-STA','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(context.root,'runtime/manager.ps1'),'-ValidateOnly'],{windowsHide:true,timeout:15000,cwd:os.tmpdir()});
     const opened=JSON.parse((await fs.readFile(receipt,'utf8')).replace(/^\ufeff/,''));
-    assert.equal(opened.branch,'open');assert.equal(opened.validate,true);
-    assert.equal(await fs.realpath(opened.root),await fs.realpath(versionRoot));assert.equal(await fs.realpath(opened.home),await fs.realpath(context.root));
-    await launch(['-Install','-NoShortcut']);
-    const installed=JSON.parse((await fs.readFile(receipt,'utf8')).replace(/^\ufeff/,''));
-    assert.equal(installed.branch,'install');assert.equal(installed.noShortcut,true);
-    assert.equal(await fs.realpath(installed.home),await fs.realpath(context.root));assert.equal(await fs.realpath(installed.source),await fs.realpath(app));
+    assert.equal(opened.validate,true);assert.equal(await fs.realpath(opened.root),await fs.realpath(path.dirname(app)));assert.equal(await fs.realpath(opened.home),await fs.realpath(context.root));
+    assert.equal((await fs.readdir(context.root)).some(name=>/\.(cmd|bat|ps1)$/i.test(name)),false);
   }
-  await fs.writeFile(path.join(context.root,'current.json'),'{}');
-  await assert.rejects(launch(['-ValidateOnly']),error=>error.code===1);
-  assert.match(await fs.readFile(path.join(context.root,'state','manager-startup.log'),'utf8'),/安装版本记录无效/);
 });
 
 test('native WPF manager loads without starting desktop, services or model requests',{skip:process.platform!=='win32'},async()=>{

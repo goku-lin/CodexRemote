@@ -72,8 +72,9 @@ export async function releaseSigningKey(dataDir,{keyJson}={}){
   if(privateKey.asymmetricKeyType!=='ed25519' || crypto.createPublicKey(privateKey).export({format:'der',type:'spki'}).toString('base64')!==saved.publicKey)throw new Error('发布签名密钥无效，请保留原密钥并检查配置');
   return {publicKey:saved.publicKey,privateKey};
 }
+export const validReleaseFilename=value=>typeof value==='string' && value.length<=120 && /^CodexRemote-Portable-v\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?-win-x64\.zip$/.test(value);
 function signedPayload(value){
-  if(value?.schema!==1 || !/^[a-f0-9]{20}$/.test(value.version) || value.filename!=='connector-'+value.version+'.zip'
+  if(value?.schema!==1 || !/^[a-f0-9]{20}$/.test(value.version) || !validReleaseFilename(value.filename)
     || !/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.size) || value.size<1 || value.size>maxPackageSize
     || !Number.isSafeInteger(value.sequence) || value.sequence<1)throw new Error('更新版本信息无效');
   return {schema:1,version:value.version,filename:value.filename,sha256:value.sha256,size:value.size,sequence:value.sequence};

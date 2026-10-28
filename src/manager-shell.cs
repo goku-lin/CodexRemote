@@ -22,10 +22,9 @@ static class CodexRemoteManager {
       bool owned;try{owned=mutex.WaitOne(0);}catch(AbandonedMutexException){owned=true;}
       if(!owned){if(!check)MessageBox.Show("管理窗口已经打开，请在任务栏中切回。","Codex Remote");return 0;}
       try {
-      string entry=Path.Combine(root,"manager-bootstrap.ps1");
+      string entry=Path.Combine(root,"runtime","manager.ps1");
       if(!File.Exists(entry))entry=Path.Combine(root,"scripts","manager-ui.ps1");
-      if(!File.Exists(entry))entry=Path.Combine(root,"管理应用入口.ps1");
-      if(!File.Exists(entry))throw new Exception("找不到管理应用入口，请保留启动程序与项目/连接器目录放在一起。");
+      if(!File.Exists(entry))throw new Exception("应用文件不完整，请重新解压或安装 Codex Remote。");
       var initial=InitialSessionState.CreateDefault();
       initial.ExecutionPolicy=Microsoft.PowerShell.ExecutionPolicy.Bypass;
       using(var runspace=RunspaceFactory.CreateRunspace(initial)) {

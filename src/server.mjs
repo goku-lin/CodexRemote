@@ -148,7 +148,7 @@ function sendJson(res, status, value) {
 
 function sendError(res, status, message) { return sendJson(res, status, { error: message }); }
 async function sendConnectorPackage(res,release){
-  release ||= await readRelease(root,dataDir);if(!release)return sendError(res,404,'请先在主电脑 scripts 文件夹运行「发布连接器更新.cmd」');
+  release ||= await readRelease(root,dataDir);if(!release)return sendError(res,404,'此电脑尚未发布更新包。');
   const stream=fs.createReadStream(release.path);
   stream.on('error',()=>{if(!res.headersSent)sendError(res,500,'安装包无法读取');else res.destroy();});
   res.writeHead(200,{'content-type':'application/zip','content-length':release.size,'content-disposition':'attachment; filename="CodexRelayConnector-'+release.version+'.zip"','cache-control':'no-store'});
@@ -1223,7 +1223,7 @@ async function route(req, res) {
   if(pathname.startsWith('/api/network-check/') && await networkCheck(req,res,pathname))return;
   if(pathname==='/api/maintenance' && req.method==='GET'){
     const id=url.searchParams.get('requestId');if(id&&!maintenanceId(id))return sendError(res,400,'无效的重启请求编号。');
-    const passwordSetupPath=isLocalBrowser(req)?path.join(fs.existsSync(path.join(dataDir,'connector.json'))?path.dirname(dataDir):root,'设置重启密码.cmd'):undefined;
+    const passwordSetupPath=isLocalBrowser(req)?path.join(fs.existsSync(path.join(dataDir,'connector.json'))?path.dirname(dataDir):root,'CodexRemote.exe'):undefined;
     return sendJson(res,200,{...maintenance.status(id),passwordSetupPath});
   }
   if(pathname==='/api/maintenance/restart' && req.method==='POST'){

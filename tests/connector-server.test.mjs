@@ -22,7 +22,7 @@ test('one paired browser controls two computers, with isolated sessions, routing
   const get=async endpoint=>(await fetch(base+endpoint)).json();
   const enroll=async name=>{const code=await (await post('/api/connectors/code',{})).json();return (await post('/api/connector/enroll',{code:code.code,nonce:crypto.randomUUID(),name})).json();};
   const one=await enroll('电脑一'),two=await enroll('电脑二');
-  const version='a'.repeat(20),archive=createArchive([{name:'release.json',bytes:Buffer.from(JSON.stringify({version}))}]),filename='connector-'+version+'.zip';
+  const version='a'.repeat(20),archive=createArchive([{name:'release.json',bytes:Buffer.from(JSON.stringify({version}))}]),filename='CodexRemote-Portable-v0.2.0-win-x64.zip';
   await fs.mkdir(path.join(directory,'releases'));await fs.writeFile(path.join(directory,'releases',filename),archive);await fs.writeFile(path.join(directory,'releases','latest.json'),JSON.stringify({version,filename,sha256:crypto.createHash('sha256').update(archive).digest('hex'),size:archive.length}));
   const manifest=await (await fetch(base+'/api/runner/'+one.id+'/release',{headers:{'x-codex-relay-token':one.token}})).json();assert.equal(manifest.version,version);assert.equal(manifest.path,undefined);
   const download=await fetch(base+'/api/runner/'+one.id+'/release/'+version,{headers:{'x-codex-relay-token':one.token}});assert.deepEqual(Buffer.from(await download.arrayBuffer()),archive);

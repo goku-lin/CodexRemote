@@ -21,7 +21,7 @@ export async function extractArchive(archive,destination){
     const method=archive.readUInt16LE(offset+8),size=archive.readUInt32LE(offset+18),length=archive.readUInt32LE(offset+22),nameLength=archive.readUInt16LE(offset+26),extraLength=archive.readUInt16LE(offset+28);
     const name=archive.subarray(offset+30,offset+30+nameLength).toString('utf8'),start=offset+30+nameLength+extraLength,end=start+size;
     if(end>archive.length || length>130_000_000 || (total+=length)>240_000_000 || ++count>300)throw new Error('安装包内容无效');
-    if(!/^(?:app\/[a-zA-Z0-9_./-]+|runtime\/(?:node\.exe|LICENSE\.txt)|release\.json|安装连接器\.(?:cmd|ps1)|连接器说明\.txt)$/.test(name) || name.includes('..') || name.includes('/.relay-data') || name.includes('/.git'))throw new Error('安装包包含不允许的路径');
+    if(!/^(?:versions\/[a-f0-9]{20}\/(?:app\/[a-zA-Z0-9_./-]+|runtime\/(?:node\.exe|LICENSE\.txt)|release\.json)|runtime\/(?:manager|service)\.ps1|(?:release|current|manager|portable)\.json|CodexRemote\.exe|README\.txt)$/.test(name) || name.includes('..') || name.includes('/.relay-data') || name.includes('/.git'))throw new Error('安装包包含不允许的路径');
     const bytes=method===8 ? inflateRawSync(archive.subarray(start,end),{maxOutputLength:length+1}) : method===0 ? archive.subarray(start,end) : null;
     if(!bytes || bytes.length!==length || crc(bytes)!==archive.readUInt32LE(offset+14))throw new Error('安装包校验失败');
     const filename=path.resolve(destination,...name.split('/'));
