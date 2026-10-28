@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {createArchive} from '../src/connector-archive.mjs';
+import {buildRelease} from '../src/connector-release.mjs';
 import {autoUpdate,entries,install,ensureStableRuntime} from '../src/connector-client.mjs';
 import {releaseSigningKey,signRelease,verifyRelease,updateSource,updateUrl,lanUpdateRequest,availableRelease,downloadRelease} from '../src/connector-updates.mjs';
 
@@ -226,6 +227,12 @@ test('public build signing can use a persistent CI secret without writing it to 
   const isolated=path.join(directory,'ci'),loaded=await releaseSigningKey(isolated,{keyJson});
   assert.equal(loaded.publicKey,key.publicKey);assert.deepEqual(await fs.readdir(isolated),[]);
   await assert.rejects(releaseSigningKey(isolated,{keyJson:'invalid'}));
+});
+
+test('an unverified bundled Node version stops release construction before creating signing state or an installer',async t=>{
+  const directory=await folder(t);await fs.writeFile(path.join(directory,'.node-version'),'0.0.0\n');
+  await assert.rejects(buildRelease(directory,{publish:false,publicBuild:true}),/已验证的 Node\.js 0\.0\.0/);
+  assert.deepEqual(await fs.readdir(directory),['.node-version']);
 });
 
 test('the live publisher serves signed releases without a browser grant and rejects Funnel/proxy access',async t=>{

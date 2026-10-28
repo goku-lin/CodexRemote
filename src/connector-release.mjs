@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {createArchive} from './connector-archive.mjs';
 import {projectRoot} from './layout.mjs';
@@ -12,6 +14,9 @@ import {dependencyNotices} from './dependency-notices.mjs';
 export const releaseDirectory=(root,dataDir)=>path.join(dataDir || path.join(root,'.relay-data'),'releases');
 export async function buildRelease(root,{dataDir,nodePath=process.execPath,publish=true,publicBuild=false}={}){
   if(publicBuild&&publish)throw new Error('公开构建不能覆盖局域网 OTA 发布，请使用 --candidate。');
+  const expected=(await fs.readFile(path.join(root,'.node-version'),'utf8')).trim();
+  const runtimeVersion=(await promisify(execFile)(nodePath,['--version'],{windowsHide:true,timeout:10000})).stdout.trim();
+  if(runtimeVersion!=='v'+expected)throw new Error('安装包需使用已验证的 Node.js '+expected+' 构建，当前运行环境为 '+runtimeVersion+'。');
   const {build}=await import('esbuild');
   const stateDir=dataDir || path.join(root,'.relay-data'),directory=releaseDirectory(root,dataDir);
   const signing=await releaseSigningKey(stateDir,{keyJson:publicBuild?process.env.CODEX_REMOTE_RELEASE_SIGNING_KEY:undefined});
@@ -48,7 +53,7 @@ export async function buildRelease(root,{dataDir,nodePath=process.execPath,publi
   files.push({name:'runtime/LICENSE.txt',bytes:license});
   const digest=crypto.createHash('sha256').update(JSON.stringify({updates,sequence}));for(const file of files)digest.update(file.name).update('\0').update(file.bytes);
   const version=digest.digest('hex').slice(0,20);
-  files.push({name:'release.json',bytes:Buffer.from(JSON.stringify({version,releaseVersion:pkg.version,nodeVersion:process.version,distribution:publicBuild?'public':'lan',signingPublicKey:signing.publicKey,updates}))});
+  files.push({name:'release.json',bytes:Buffer.from(JSON.stringify({version,releaseVersion:pkg.version,nodeVersion:runtimeVersion,distribution:publicBuild?'public':'lan',signingPublicKey:signing.publicKey,updates}))});
   files.push({name:'安装连接器.cmd',bytes:Buffer.from('@echo off\r\nchcp 65001 >nul\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0app\\connector-bootstrap.ps1"\r\nif errorlevel 1 pause\r\n')});
   files.push({name:'连接器说明.txt',bytes:Buffer.from('\ufeff'+[
     '运行任务的 Windows 电脑先安装并登录 Codex 桌面；手机和公司笔记本只需浏览器。',

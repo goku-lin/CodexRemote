@@ -33,7 +33,7 @@
 
 ## 从源码运行
 
-准备 Windows x64、Node.js 22+、Windows PowerShell 5.1 和 .NET Framework 4.x，在项目根目录执行：
+准备 Windows x64、Node.js 22.23.1、Windows PowerShell 5.1 和 .NET Framework 4.x，在项目根目录执行：
 
 ```powershell
 npm ci

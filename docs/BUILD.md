@@ -2,7 +2,7 @@
 
 ## 开发环境
 
-- Windows x64、Node.js 22 或更新版本，终端可运行 `node` 和 `npm`。
+- Windows x64、Node.js 22.23.1，终端可运行 `node` 和 `npm`；CI 与正式安装包统一读取 `.node-version`，升级运行环境前需通过桌面同步回归。
 - Windows PowerShell 5.1、.NET Framework 4.x；编译器位于 `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`，无需另装 Visual Studio。
 - Node.js 的 `LICENSE` 或 `LICENSE.txt` 需与 `node.exe` 位于同一目录。
 - 实际桌面连接和完整安装包验证需要安装 Codex 桌面端；仅构建 EXE 不需要登录账号。
