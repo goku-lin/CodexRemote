@@ -163,15 +163,15 @@ async function githubFixture(t){
   await save(path.join(f.state,'update-source.json'),source);
   const manifest=signRelease({version:f.version,filename:'connector-'+f.version+'.zip',size:f.bytes.length,sha256:crypto.createHash('sha256').update(f.bytes).digest('hex'),sequence:2},f.key);
   const release={tag_name:tag,name:'版本 0.1.1',body:'更新说明\n保留配置',draft:false,prerelease:true,assets:[
-    {name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},
-    {name:manifest.filename,state:'uploaded',size:f.bytes.length,browser_download_url:base+manifest.filename}
+    {id:1,name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},
+    {id:2,name:manifest.filename,state:'uploaded',size:f.bytes.length,browser_download_url:base+manifest.filename}
   ]};
   let downloads=0;const requests=[];
   const fetcher=async(url,options)=>{
     requests.push({url,options});assert.equal(options.headers.Authorization,undefined);assert.equal(options.redirect,'manual');
-    if(url.startsWith('https://api.github.com/'))return Response.json([release]);
-    if(url.endsWith('/update-manifest.json'))return Response.json(manifest);
-    if(url.endsWith('.zip')){downloads++;return new Response(f.bytes);}
+    if(url.endsWith('/releases?per_page=20'))return Response.json([release]);
+    if(url.endsWith('/assets/1')){assert.equal(options.headers.Accept,'application/octet-stream');return Response.json(manifest);}
+    if(url.endsWith('/assets/2')){assert.equal(options.headers.Accept,'application/octet-stream');downloads++;return new Response(f.bytes);}
     throw new Error('Unexpected URL '+url);
   };
   return {...f,source,manifest,release,requests,fetcher,get archiveDownloads(){return downloads;}};
@@ -182,6 +182,7 @@ test('GitHub check exposes release notes without downloading or restarting; inst
   const checked=await autoUpdate(f.home,options);
   assert.equal(checked.status,'available');assert.equal(checked.release.name,'版本 0.1.1');assert.match(checked.release.notes,/保留配置/);
   assert.equal(f.archiveDownloads,0);assert.deepEqual(f.calls,[]);assert.equal((await f.pointer()).version,f.old);
+  assert.ok(f.requests.every(request=>new URL(request.url).hostname==='api.github.com'));
   assert.equal((await autoUpdate(f.home,{...options,install:true,activeWork:async()=>true})).status,'deferred');assert.equal(f.archiveDownloads,0);
   assert.equal((await autoUpdate(f.home,{...options,install:true,activeWork:async()=>false})).status,'updated');assert.equal(f.archiveDownloads,1);
   assert.deepEqual(f.calls,['prepare','entries','stop','launch','ready']);

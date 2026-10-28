@@ -119,7 +119,7 @@ test('installed manager checks public release notes without service calls and in
   const updates={schema:1,kind:'github',repository:'example/remote',channel:'preview',publicKey:key.publicKey,sequence:1};
   await save(path.join(context.dataDir,'update-source.json'),updates);await save(path.join(f.root,'current.json'),{version:'b'.repeat(20)});
   const manifest=signRelease({version,filename,size:100,sha256:'c'.repeat(64),sequence:2},key),base='https://github.com/example/remote/releases/download/v0.1.1/';
-  const result=await managerAction({action:'check-update'},context,{fetcher:async url=>url.startsWith('https://api.github.com/')?Response.json([{tag_name:'v0.1.1',name:'新版',body:'保留配对与设置',assets:[{name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},{name:filename,state:'uploaded',size:100,browser_download_url:base+filename}]}]):Response.json(manifest)});
+  const result=await managerAction({action:'check-update'},context,{fetcher:async url=>url.endsWith('/releases?per_page=20')?Response.json([{tag_name:'v0.1.1',name:'新版',body:'保留配对与设置',assets:[{id:1,name:'update-manifest.json',state:'uploaded',browser_download_url:base+'update-manifest.json'},{id:2,name:filename,state:'uploaded',size:100,browser_download_url:base+filename}]}]):Response.json(manifest)});
   assert.equal(result.update.status,'available');assert.equal(result.update.release.notes,'保留配对与设置');
   let called=false;const options={run:async(_file,args)=>{called=true;assert.ok(args.includes('--install'));return {stdout:'已更新'};}};
   await assert.rejects(managerAction({action:'update'},context,options),/先确认/);assert.equal(called,false);

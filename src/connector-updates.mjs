@@ -152,14 +152,20 @@ export async function downloadRelease(url,manifest,{fetcher=fetch,timeout=120000
 // and the publisher's GitHub credentials never enter update requests.
 function githubAssetUrl(value,repository){
   const url=new URL(value);
-  if(url.protocol!=='https:' || url.hostname!=='github.com' || url.port || url.username || url.password || url.search || url.hash
-    || !url.pathname.startsWith('/'+repository+'/releases/download/'))throw new Error('GitHub 更新附件地址无效');
+  const download=url.hostname==='github.com' && url.pathname.startsWith('/'+repository+'/releases/download/');
+  const api=url.hostname==='api.github.com' && url.pathname.startsWith('/repos/'+repository+'/releases/assets/')
+    && /^[1-9]\d*$/.test(url.pathname.slice(('/repos/'+repository+'/releases/assets/').length));
+  if(url.protocol!=='https:' || !(download || api) || url.port || url.username || url.password || url.search || url.hash)throw new Error('GitHub 更新附件地址无效');
   return url.href;
+}
+function githubAssetRequest(asset,repository){
+  if(!Number.isSafeInteger(asset.id) || asset.id<1)throw new Error('GitHub 更新附件编号无效');
+  return 'https://api.github.com/repos/'+repository+'/releases/assets/'+asset.id;
 }
 async function githubResponse(value,{fetcher,timeout}){
   const signal=AbortSignal.timeout(timeout);let url=new URL(value);
   for(let redirects=0;redirects<5;redirects++){
-    const response=await fetcher(url.href,{redirect:'manual',signal,headers:{Accept:'application/vnd.github+json','User-Agent':'CodexRemote-Updater','X-GitHub-Api-Version':'2022-11-28'}});
+    const response=await fetcher(url.href,{redirect:'manual',signal,headers:{Accept:url.pathname.includes('/releases/assets/')?'application/octet-stream':'application/vnd.github+json','User-Agent':'CodexRemote-Updater','X-GitHub-Api-Version':'2022-11-28'}});
     if(![301,302,303,307,308].includes(response.status)){
       if(!response.ok)throw new Error(response.status===403 || response.status===429 ? 'GitHub 更新检查受限，请稍后再试' : 'GitHub 更新请求失败（HTTP '+response.status+'）');
       return response;
@@ -180,12 +186,13 @@ async function githubRelease(source,{fetcher,timeout}){
     && item.assets?.some(asset=>asset.name==='update-manifest.json' && asset.state==='uploaded'));
   if(!release)return {status:'empty'};
   const asset=release.assets.find(item=>item.name==='update-manifest.json');
-  const response=await githubResponse(githubAssetUrl(asset.browser_download_url,source.repository),{fetcher,timeout});
+  githubAssetUrl(asset.browser_download_url,source.repository);
+  const response=await githubResponse(githubAssetRequest(asset,source.repository),{fetcher,timeout});
   const manifest=verifyRelease(JSON.parse((await boundedBytes(response,16384)).toString('utf8')),source);
   const archive=release.assets.find(item=>item.name===manifest.filename && item.state==='uploaded');
   if(!archive || archive.size!==manifest.size)throw new Error('GitHub 发布缺少完整的更新安装包');
   const expected='/'+source.repository+'/releases/download/'+encodeURIComponent(release.tag_name)+'/';
   for(const item of [asset,archive])if(new URL(githubAssetUrl(item.browser_download_url,source.repository)).pathname!==expected+item.name)throw new Error('GitHub 更新附件不属于同一发布版本');
-  return {url:{kind:'github',repository:source.repository,url:archive.browser_download_url},manifest,
+  return {url:{kind:'github',repository:source.repository,url:githubAssetRequest(archive,source.repository)},manifest,
     release:{tag:String(release.tag_name).slice(0,120),name:String(release.name || release.tag_name).slice(0,200),notes:String(release.body || '此版本未提供更新说明。').slice(0,12000)}};
 }
