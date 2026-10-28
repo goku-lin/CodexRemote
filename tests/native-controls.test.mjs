@@ -179,6 +179,10 @@ test('browser → Runner → original Desktop supports steer, actual question/ap
   await waitFor(()=>get('/api/deliveries/'+fast.requestId),receipt=>receipt.state==='accepted');
   assert.equal(core.findLast(message=>message.method==='turn/start').params.serviceTier,'priority');
   assert.equal(core.findLast(message=>message.method==='turn/start').params.threadId,'original');
+  // The acceptance receipt can precede the lifecycle batch. Observe this turn
+  // running before testing its completion, rather than accepting the previous
+  // turn's already-idle session as proof that the new turn has completed.
+  await waitFor(async()=>(await get('/api/sessions')).sessions[0],value=>value.status==='running' && value.activeTurnId==='retried');
   coreStatus='idle';notify('turn/completed',{turn:{id:'retried',status:'completed'}});
   await waitFor(async()=>(await get('/api/sessions')).sessions[0],value=>value.status==='done');
   const standard={...fast,text:'Standard next turn',serviceTier:'default',requestId:'standardnative0123456789'};

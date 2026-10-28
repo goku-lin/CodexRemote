@@ -25,6 +25,7 @@ static class CodexRemoteLauncher {
       if(!File.Exists(Path.Combine(home,"state","connector.json"))) {
         var initialize=new ProcessStartInfo(node,Quote(Path.Combine(root,"app","portable-start.mjs"))+" --home "+Quote(home));
         initialize.UseShellExecute=false;initialize.CreateNoWindow=true;initialize.RedirectStandardOutput=true;initialize.RedirectStandardError=true;
+        initialize.StandardOutputEncoding=new UTF8Encoding(false);initialize.StandardErrorEncoding=new UTF8Encoding(false);
         using(var child=Process.Start(initialize)){
           var output=child.StandardOutput.ReadToEndAsync();var error=child.StandardError.ReadToEndAsync();
           if(!child.WaitForExit(60000)){child.Kill();throw new Exception("首次启动准备超时，请重新打开应用。");}

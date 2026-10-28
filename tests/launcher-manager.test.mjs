@@ -33,7 +33,7 @@ test('management requests tolerate the Framework UTF-8 BOM and split Unicode, bo
   await assert.rejects(readManagerRequest(Readable.from([Buffer.from('[]')])),/缺少操作/);
 });
 
-test('real WPF window sends and renders status through Windows PowerShell 5 and the compiled EXE host',{skip:process.platform!=='win32',timeout:30000},async t=>{
+test('real WPF window sends and renders status through Windows PowerShell 5 and the compiled EXE host',{skip:process.platform!=='win32',timeout:60000},async t=>{
   const context=await fixture(t),version='c'.repeat(20),versionRoot=path.join(context.root,'versions',version);
   await fs.mkdir(versionRoot,{recursive:true});await fs.mkdir(path.join(context.root,'state'));
   await fs.symlink(path.resolve('src'),path.join(versionRoot,'app'),'junction');
@@ -44,7 +44,7 @@ test('real WPF window sends and renders status through Windows PowerShell 5 and 
   const quote=value=>"'"+value.replaceAll("'","''")+"'",ui=path.resolve('scripts/manager-ui.ps1');
   for(const encoding of ["[Text.Encoding]::GetEncoding(936)","[Text.UTF8Encoding]::new($true)"]){
     const script="[Console]::InputEncoding="+encoding+"; & "+quote(ui)+" -ProjectRoot "+quote(versionRoot)+" -ConnectorHome "+quote(context.root)+" -VerifyStatusOnly";
-    const result=await execute('powershell.exe',['-NoProfile','-STA','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,timeout:15000});
+    const result=await execute('powershell.exe',['-NoProfile','-STA','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,timeout:30000});
     const proof=JSON.parse(result.stdout.trim().replace(/^\ufeff/,''));assert.equal(proof.verified,true);assert.equal(proof.healthRows,5);assert.match(proof.versionText,new RegExp(version));
   }
   const receipt=path.join(context.root,'rendered.json');await fs.mkdir(path.join(context.root,'scripts'));

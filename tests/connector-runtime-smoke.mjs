@@ -20,6 +20,12 @@ export async function verifyPortableConnector(directory,{setupPath}={}){
   try{
     const portableHome=path.join(directory,'portable-first-run'),movedHome=path.join(directory,'移动后的解压应用');await fs.mkdir(portableHome);
     for(const part of ['versions','runtime','CodexRemote.exe','release.json','current.json','manager.json','portable.json'])await fs.cp(path.join(directory,part),path.join(portableHome,part),{recursive:true});
+    const portableMetadata=path.join(portableHome,'versions',metadata.version,'release.json'),originalMetadata=await fs.readFile(portableMetadata);
+    await fs.writeFile(portableMetadata,JSON.stringify({...metadata,version:'invalid'}));
+    await promisify(execFile)(path.join(portableHome,'CodexRemote.exe'),['--check-entry','--initialize-only'],{windowsHide:true,timeout:20000}).then(()=>{throw new Error('损坏的应用版本未被拒绝');},error=>{if(error.code!==1)throw error;});
+    const startupError=await fs.readFile(path.join(portableHome,'application-error.log'),'utf8');
+    if(!startupError.includes('应用版本不匹配') || startupError.includes('\ufffd'))throw new Error('首次启动的中文错误显示不正确');
+    await fs.writeFile(portableMetadata,originalMetadata);
     await promisify(execFile)(path.join(portableHome,'CodexRemote.exe'),['--check-entry','--initialize-only'],{windowsHide:true,timeout:20000});
     const portableConfigFile=path.join(portableHome,'state','connector.json'),identity=await fs.readFile(portableConfigFile),portableConfig=JSON.parse(identity);
     if(portableConfig.mode!=='independent')throw new Error('解压版未初始化独立电脑');
