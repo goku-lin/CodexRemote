@@ -13,11 +13,13 @@ async function poll(read){for(let i=0;i<250;i++){try{const result=await read();i
 test('new browser chats share Desktop; explicit standalone chats can be safely handed back without restarting Desktop or Relay',{timeout:30000},async t=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'relay-shared-desktop-')),children=[];
   const endpoint=path.join(directory,'native.json'),log=path.join(directory,'rpc.jsonl'),core=[],desktop=[],threads=new Map();let next=0,host;
+  const preferenceFile=path.join(directory,'.codex-global-state.json');
+  await fs.writeFile(preferenceFile,JSON.stringify({'electron-persisted-atom-state':{'permission-selection-by-host-id:local':{kind:'agent-mode',agentMode:'full-access'},privateAccount:'fixture-private-account'}}));
   t.after(async()=>{for(const child of children.reverse())if(child.exitCode===null){const end=new Promise(resolve=>child.once('exit',resolve));child.stdin?.end();const timer=setTimeout(()=>child.kill(),2000);await end;clearTimeout(timer);}await host?.close();assert.equal(path.dirname(directory),path.resolve(os.tmpdir()));await fs.rm(directory,{recursive:true,force:true});});
   host=new NativeDesktopHost({endpointFile:endpoint,writeDesktop:message=>desktop.push(message),writeCore:message=>{
     core.push(message);let result={};
     if(message.method==='thread/start'){
-      const thread={id:'shared-'+(++next),cwd:directory,name:'Shared chat',status:{type:'idle'}};threads.set(thread.id,thread);result={thread};
+      const thread={id:'shared-'+(++next),cwd:directory,name:'Shared chat',status:{type:'idle'}};threads.set(thread.id,thread);result={thread,model:message.params.model || 'chosen',reasoningEffort:message.params.config?.model_reasoning_effort || 'high',approvalPolicy:message.params.approvalPolicy || 'on-request',sandbox:{type:message.params.sandbox==='danger-full-access'?'dangerFullAccess':message.params.sandbox==='read-only'?'readOnly':'workspaceWrite'}};
       host.fromCore({method:'thread/started',params:{thread}});
     }else if(message.method==='thread/read')result={thread:threads.get(message.params.threadId)||{id:message.params.threadId,status:{type:'notLoaded'}}};
     else if(message.method==='thread/resume'){const thread={id:message.params.threadId,status:{type:'idle'}};threads.set(thread.id,thread);result={thread};}
@@ -29,7 +31,7 @@ test('new browser chats share Desktop; explicit standalone chats can be safely h
   await fs.writeFile(fake,`import readline from 'node:readline';import fs from 'node:fs';const owned=new Set();fs.appendFileSync(process.env.FIXTURE_LOG,JSON.stringify({pid:process.pid,event:'boot'})+'\\n');readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id==null)return;fs.appendFileSync(process.env.FIXTURE_LOG,JSON.stringify({pid:process.pid,method:m.method})+'\\n');let result={};if(m.method==='thread/list')result={data:[]};if(m.method==='model/list')result={data:[]};if(m.method==='thread/start'){owned.add('standalone');result={thread:{id:'standalone',status:{type:'idle'}}};}if(m.method==='thread/loaded/list')result={data:[...owned]};if(m.method==='thread/read')result={thread:{id:m.params.threadId,status:{type:owned.has(m.params.threadId)?'idle':'notLoaded'}}};if(m.method==='thread/goal/get')result={goal:null};if(m.method==='turn/start'){result={turn:{id:'standalone-turn',status:'inProgress'}};setTimeout(()=>process.stdout.write(JSON.stringify({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:'standalone-turn',status:'completed'}}})+'\\n'),100);}process.stdout.write(JSON.stringify({id:m.id,result})+'\\n');});`);
   const reservation=net.createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
   const base='http://127.0.0.1:'+port;
-  const env={...process.env,HOST:'127.0.0.1',PORT:String(port),CODEX_RELAY_NO_EMBEDDED:'1',CODEX_RELAY_TOKEN:'shared-fixture',CODEX_RELAY_DATA_DIR:directory,CODEX_RELAY_PARENT_PIPE:'1',CODEX_BIN:process.execPath,CODEX_ARGS_JSON:JSON.stringify([fake]),CODEX_SESSIONS_DIR:path.join(directory,'sessions'),CODEX_RELAY_NATIVE_ENDPOINT:endpoint,CODEX_RELAY_SERVER:base,CODEX_RELAY_CWD:directory,CODEX_APP_TOOLS_PIPE_PATH:'',CODEX_THREAD_ID:'',FIXTURE_LOG:log};
+  const env={...process.env,CODEX_HOME:directory,HOST:'127.0.0.1',PORT:String(port),CODEX_RELAY_NO_EMBEDDED:'1',CODEX_RELAY_TOKEN:'shared-fixture',CODEX_RELAY_DATA_DIR:directory,CODEX_RELAY_PARENT_PIPE:'1',CODEX_BIN:process.execPath,CODEX_ARGS_JSON:JSON.stringify([fake]),CODEX_SESSIONS_DIR:path.join(directory,'sessions'),CODEX_RELAY_NATIVE_ENDPOINT:endpoint,CODEX_RELAY_SERVER:base,CODEX_RELAY_CWD:directory,CODEX_APP_TOOLS_PIPE_PATH:'',CODEX_THREAD_ID:'',FIXTURE_LOG:log};
   await fs.mkdir(env.CODEX_SESSIONS_DIR);
   const appRoot=process.env.CODEX_RELAY_SHARED_PACKAGE_ROOT || path.resolve('.');
   const launch=file=>{const child=spawn(process.execPath,[path.join(appRoot,file)],{cwd:appRoot,env,windowsHide:true,stdio:['pipe','pipe','pipe']});children.push(child);child.stdout.resume();child.stderr.resume();return child;};
@@ -41,6 +43,9 @@ test('new browser chats share Desktop; explicit standalone chats can be safely h
   const created=await post('/api/sessions',{cwd:directory,prompt:'Shared first message',requestId:'shared-desktop-create-0001'});assert.equal(created.status,201);
   const shared=await poll(async()=>{const s=(await get('/api/sessions')).sessions.find(s=>s.id===created.body.session.id);return s?.executionOwner==='desktop' && s.threadId && core.some(m=>m.method==='turn/start' && m.params.threadId===s.threadId) && s;});
   assert.equal(core.filter(m=>m.method==='thread/start').length,1);
+  assert.equal(core.find(m=>m.method==='thread/start').params.approvalPolicy,'never');
+  assert.equal(core.find(m=>m.method==='thread/start').params.sandbox,'danger-full-access');
+  assert.equal(shared.nativePermission,'danger-full-access');
   assert.ok(desktop.some(m=>m.method==='thread/started' && m.params.thread.id===shared.threadId));
   let rpc=(await fs.readFile(log,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(!rpc.some(m=>['thread/start','thread/resume','turn/start'].includes(m.method)));
@@ -63,6 +68,30 @@ test('new browser chats share Desktop; explicit standalone chats can be safely h
   rpc=(await fs.readFile(log,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(!rpc.some(m=>m.pid===newPid && ['thread/start','thread/resume','turn/start'].includes(m.method)));
   assert.ok(!core.some(m=>m.method==='turn/interrupt' || m.method==='thread/fork'));
+  await poll(async()=>!(await get('/api/devices/local/catalog')).pending);
+  await events({type:'catalog',catalog:{models:[{model:'chosen',supportedReasoningEfforts:[{reasoningEffort:'high'},{reasoningEffort:'max'}]}],permissions:[{id:'danger-full-access'},{id:'read-only'}]}});
+  const newCatalog=await get('/api/devices/local/catalog');assert.equal(newCatalog.desktopDefaultPermission,'danger-full-access');assert.ok(!JSON.stringify(newCatalog).includes('fixture-private-account'));
+  const emptyBody={cwd:directory,model:'chosen',effort:'max',requestId:'shared-desktop-empty-0001'};
+  const [empty,repeatedEmpty]=await Promise.all([post('/api/sessions',emptyBody),post('/api/sessions',emptyBody)]);assert.equal(empty.status,201);assert.equal(repeatedEmpty.body.session.id,empty.body.session.id);
+  const blank=await poll(async()=>{const s=(await get('/api/sessions')).sessions.find(s=>s.id===empty.body.session.id);return s?.threadId && s.status==='ready' && s;});
+  assert.ok(desktop.some(message=>message.method==='thread/started' && message.params.thread.id===blank.threadId));
+  assert.equal(blank.title,'新对话');assert.equal(blank.nativeModel,'chosen');assert.equal(blank.nativeEffort,'max');assert.equal(blank.nativePermission,'danger-full-access');
+  assert.equal(core.filter(message=>message.method==='thread/start' && message.params.model==='chosen').length,1);
+  assert.equal((await get('/api/deliveries/shared-desktop-empty-0001')).state,'accepted');
+  assert.equal(core.filter(message=>message.method==='turn/start' && message.params.threadId===blank.threadId).length,0,'creating an empty thread never starts a model turn');
+  assert.ok(!(await get('/api/sessions/'+blank.id+'/history')).events.some(event=>event.type==='user_message'));
+  const sent=await post('/api/sessions/'+blank.id+'/turns',{text:'现在才发送第一句话',requestId:'shared-desktop-empty-send-0001'});assert.equal(sent.status,202);
+  await poll(()=>core.some(message=>message.method==='turn/start' && message.params.threadId===blank.threadId));
+  assert.equal(core.filter(message=>message.method==='turn/start' && message.params.threadId===blank.threadId).length,1);
+  assert.equal((await get('/api/sessions')).sessions.find(s=>s.id===blank.id).title,'现在才发送第一句话');
+  const blankTurn=core.find(message=>message.method==='turn/start' && message.params.threadId===blank.threadId);assert.equal(blankTurn.params.model,'chosen');assert.equal(blankTurn.params.effort,'max');
+  host.fromCore({method:'thread/name/updated',params:{threadId:blank.threadId,threadName:'桌面正式标题'}});
+  await poll(async()=>(await get('/api/sessions')).sessions.find(s=>s.id===blank.id)?.title==='桌面正式标题');
+  await fs.writeFile(preferenceFile,JSON.stringify({'electron-persisted-atom-state':{'permission-selection-by-host-id:local':{kind:'agent-mode',agentMode:'read-only'}}}));
+  assert.equal((await get('/api/devices/local/catalog')).desktopDefaultPermission,'read-only');
+  const readonly=await post('/api/sessions',{cwd:directory,requestId:'shared-desktop-readonly-0001'});assert.equal(readonly.status,201);
+  const restricted=await poll(async()=>{const s=(await get('/api/sessions')).sessions.find(s=>s.id===readonly.body.session.id);return s?.threadId && s.status==='ready' && s;});
+  assert.equal(restricted.nativePermission,'read-only');
   await events({type:'native_status',connected:false,threadIds:[shared.threadId],capabilities:{}});
   assert.equal((await post('/api/sessions',{cwd:directory,prompt:'Must not fallback'})).status,400);
 });

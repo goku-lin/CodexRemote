@@ -54,6 +54,59 @@ test('a lost inline edit response retains its request, edited text, images and s
   } finally {for(const [name,value] of old)ui[name]=value;vm.runInContext("state.sessions=editTestSaved;delete drafts.items['edit-test']",ui);}
 });
 
+test('new chats use the current computer, stay empty until Send and retry creation without duplication',async()=>{
+  const names=['api','render','closeModal','requestId'],old=new Map(names.map(name=>[name,ui[name]])),oldDocument=ui.document;
+  const nodes=new Map(Object.entries({newTaskProject:{value:'creation-project'},newTaskExecutionMode:{value:'desktop'},newModelSelect:{value:'model'},newEffortSelect:{value:'high'},newPermissionSelect:{value:'danger-full-access'},createTaskBtn:{disabled:false},modalError:{textContent:''}}));
+  ui.document={getElementById:id=>nodes.get(id)};ui.render=()=>{};ui.closeModal=()=>{};ui.requestId=()=> 'empty-chat-create-001';
+  vm.runInContext("var createSaved={sessions:state.sessions,devices:state.devices,projects:state.projects,catalogs:state.catalogs,setup:state.newTaskSetup,active:state.activeSessionId,project:state.activeProjectId,device:state.selectedDeviceId,attachments:state.attachments,restore:state.restoreSessionId,newDraft:drafts.items['$new-task']};state.newTaskSetup=null;state.catalogs=new Map([['local',{models:[{model:'model'}],permissions:[{id:'danger-full-access'}]}]]);state.devices=[{id:'local',kind:'local',online:true},{id:'old-device',kind:'remote'}];state.selectedDeviceId='old-device';state.projects=[{id:'creation-project',deviceId:'local',cwd:'C:/fixture'}];state.attachments=[{id:'previous-chat-picture'}];delete drafts.items['$new-task'];",ui);
+  const calls=[];let fail=true;
+  ui.api=async(url,options)=>{if(url==='/api/runtime')return {threadOwnershipRevision:1};calls.push({url,body:JSON.parse(options.body)});if(fail)throw new Error('lost reply');return {session:{id:'empty-created',deviceId:'local',projectId:'creation-project'}};};
+  try{
+    await invoke('createTask');assert.equal(nodes.get('modalError').textContent,'lost reply');
+    assert.equal(vm.runInContext("drafts.get('$new-task').text",ui),'');
+    fail=false;await invoke('createTask');
+    assert.deepEqual(calls[0],calls[1]);assert.ok(calls.every(call=>call.url==='/api/sessions' && call.body.deviceId==='local' && !Object.hasOwn(call.body,'prompt') && !Object.hasOwn(call.body,'attachments')));
+    assert.equal(vm.runInContext("drafts.get('empty-created').text",ui),'');
+    assert.equal(vm.runInContext('state.attachments[0].id',ui),'previous-chat-picture');
+    assert.equal(calls.length,2);
+  }finally{for(const [name,value] of old)ui[name]=value;ui.document=oldDocument;vm.runInContext("state.sessions=createSaved.sessions;state.devices=createSaved.devices;state.projects=createSaved.projects;state.catalogs=createSaved.catalogs;state.newTaskSetup=createSaved.setup;state.activeSessionId=createSaved.active;state.activeProjectId=createSaved.project;state.selectedDeviceId=createSaved.device;state.attachments=createSaved.attachments;state.restoreSessionId=createSaved.restore;delete drafts.items['empty-created'];if(createSaved.newDraft)drafts.items['$new-task']=createSaved.newDraft;else delete drafts.items['$new-task'];",ui);}
+});
+
+test('new-chat settings wait for Desktop preferences, retain edits and submit once under repeated clicks',async()=>{
+  const names=['api','render','renderSelectors','requestId','scheduleRender','setTimeout','clearTimeout'],saved=new Map(names.map(name=>[name,ui[name]])),oldDocument=ui.document;
+  const nodes=new Map(Object.entries({newTaskProject:{value:'setup-project'},newTaskExecutionMode:{value:'desktop'},newModelSelect:{value:''},newEffortSelect:{value:''},newPermissionSelect:{value:''},createTaskBtn:{disabled:false},modalError:{textContent:''},newTaskModal:{classList:{add(){}}}}));
+  ui.document={getElementById:id=>nodes.get(id)};ui.render=()=>{};ui.scheduleRender=()=>{};ui.requestId=()=> 'setup-create-once-0001';
+  ui.renderSelectors=(prefix,id,choices)=>{for(const [key,field] of [['model','newModelSelect'],['effort','newEffortSelect'],['permission','newPermissionSelect']]){nodes.get(field).value=choices[key] || '';nodes.get(field).disabled=false;}};
+  vm.runInContext("var setupSaved={devices:state.devices,sessions:state.sessions,projects:state.projects,catalogs:state.catalogs,setup:state.newTaskSetup,active:state.activeSessionId,project:state.activeProjectId,device:state.selectedDeviceId,restore:state.restoreSessionId,draft:drafts.items['$new-task']};state.devices=[{id:'local',kind:'local',online:true}];state.projects=[{id:'setup-project',deviceId:'local',cwd:'C:/fixture'}];state.selectedDeviceId='local';state.catalogs=new Map();state.newTaskSetup={deviceId:'local',choices:{model:'chosen'},loading:true};",ui);
+  let releaseCatalog;ui.api=()=>new Promise(resolve=>releaseCatalog=resolve);
+  const setup=vm.runInContext('state.newTaskSetup',ui),load=invoke('loadNewTaskSettings',setup);
+  const catalog={deviceId:'local',models:[{model:'chosen',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high'},{reasoningEffort:'max'}]}],permissions:[{id:'danger-full-access'},{id:'read-only'}]};
+  try{
+    invoke('renderNewTaskSettings');assert.equal(nodes.get('createTaskBtn').disabled,true);
+    invoke('applyEvent',{type:'catalog',...catalog});assert.equal(setup.loading,true,'catalog events alone cannot guess the Desktop permission');
+    releaseCatalog({pending:true,creationSettingsRevision:1,desktopDefaultPermission:'danger-full-access'});await load;
+    assert.equal(nodes.get('newPermissionSelect').value,'danger-full-access');assert.equal(nodes.get('newModelSelect').value,'chosen');assert.equal(nodes.get('newEffortSelect').value,'high');assert.equal(nodes.get('createTaskBtn').disabled,false);
+    nodes.get('newEffortSelect').value='max';invoke('saveNewTaskChoices');invoke('renderNewTaskSettings');assert.equal(nodes.get('newEffortSelect').value,'max');
+    let releaseRuntime;const calls=[];
+    ui.api=async(url,options)=>{if(url==='/api/runtime')return new Promise(resolve=>releaseRuntime=resolve);calls.push(JSON.parse(options.body));return {session:{id:'setup-created',deviceId:'local',projectId:'setup-project'}};};
+    const first=invoke('createTask');await invoke('createTask');assert.equal(calls.length,0);
+    releaseRuntime({threadOwnershipRevision:1});await first;assert.equal(calls.length,1);assert.equal(calls[0].permission,'danger-full-access');assert.equal(calls[0].effort,'max');assert.ok(!Object.hasOwn(calls[0],'prompt'));
+    vm.runInContext("state.newTaskSetup={deviceId:'local',choices:{model:'chosen'},loading:true,desktopDefaultPermission:null}",ui);
+    invoke('finishNewTaskSettings',vm.runInContext('state.newTaskSetup',ui),catalog);
+    await invoke('createTask');assert.equal(calls.length,1);assert.equal(nodes.get('modalError').textContent,'请选择新对话的权限。');
+    vm.runInContext("state.newTaskSetup={deviceId:'local',choices:{model:'chosen'},loading:true}",ui);
+    ui.api=async()=>catalog;await invoke('loadNewTaskSettings',vm.runInContext('state.newTaskSetup',ui));
+    assert.match(nodes.get('modalError').textContent,/后台尚未加载/);assert.equal(nodes.get('createTaskBtn').textContent,'重新读取设置');
+    let timedOut;ui.setTimeout=callback=>{timedOut=callback;return 42;};ui.clearTimeout=()=>{};
+    vm.runInContext("state.newTaskSetup={deviceId:'local',choices:{model:'chosen'},loading:true}",ui);
+    ui.api=async()=>({pending:true,creationSettingsRevision:1,desktopDefaultPermission:'danger-full-access'});
+    await invoke('loadNewTaskSettings',vm.runInContext('state.newTaskSetup',ui));
+    assert.equal(nodes.get('createTaskBtn').disabled,true);timedOut();assert.equal(nodes.get('createTaskBtn').disabled,false);assert.match(nodes.get('modalError').textContent,/读取超时/);
+    ui.api=async()=>({...catalog,creationSettingsRevision:1,desktopDefaultPermission:'danger-full-access'});
+    await invoke('createTask');assert.equal(nodes.get('newPermissionSelect').value,'danger-full-access');assert.equal(calls.length,1,'retrying settings does not create a conversation or start a task');
+  }finally{for(const [name,value] of saved)ui[name]=value;ui.document=oldDocument;vm.runInContext("state.devices=setupSaved.devices;state.sessions=setupSaved.sessions;state.projects=setupSaved.projects;state.catalogs=setupSaved.catalogs;state.newTaskSetup=setupSaved.setup;state.activeSessionId=setupSaved.active;state.activeProjectId=setupSaved.project;state.selectedDeviceId=setupSaved.device;state.restoreSessionId=setupSaved.restore;delete drafts.items['setup-created'];if(setupSaved.draft)drafts.items['$new-task']=setupSaved.draft;else delete drafts.items['$new-task'];",ui);}
+});
+
 test('Fast mode is scoped to the active conversation and never written as a device default',()=>{
   assert.match(fullSource,/if \(!session\) return;/);
   assert.match(fullSource,/state\.sessionsChoices\[session\.id\]=choices/);
@@ -386,12 +439,13 @@ test('running composer queues messages without closing the active turn; native r
   const nodes=new Map();
   ui.document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{value:'',classList:{toggle:()=>{},add:()=>{},remove:()=>{}},setAttribute(name,value){this[name]=value;},querySelectorAll:()=>[]});return nodes.get(id);}};
   for(const name of replaced)ui[name]=()=>{};
-  vm.runInContext("var controlsSaved={sessions:state.sessions,active:state.activeSessionId,devices:state.devices,connection:state.connection};state.sessions=[{id:'controls',deviceId:'local',status:'running',activeTurnId:'t',executionOwner:'desktop',controls:{steer:true,interrupt:true}}];state.activeSessionId='controls';state.devices=[{id:'local',online:true}];state.connection='connected';",ui);
+  vm.runInContext("var controlsSaved={sessions:state.sessions,active:state.activeSessionId,devices:state.devices,connection:state.connection};state.sessions=[{id:'controls',threadId:'controls-thread',deviceId:'local',status:'running',activeTurnId:'t',executionOwner:'desktop',controls:{steer:true,interrupt:true}}];state.activeSessionId='controls';state.devices=[{id:'local',online:true}];state.connection='connected';",ui);
   try {
     invoke('renderComposer');assert.equal(nodes.get('sendBtn').disabled,false);assert.equal(nodes.get('sendBtn').title,'加入待发送消息');
     assert.equal(nodes.get('promptInput').placeholder,'写下一条消息，发送后可选择引导…');
     ui.isMobileLayout=()=>true;invoke('renderComposer');assert.equal(nodes.get('promptInput').placeholder,'继续说，可引导…');
     vm.runInContext("state.sessions[0].status='interrupting'",ui);invoke('renderComposer');assert.equal(nodes.get('sendBtn').disabled,false);
+    vm.runInContext("state.sessions[0].threadId=null;state.sessions[0].status='starting'",ui);invoke('renderComposer');assert.equal(nodes.get('sendBtn').disabled,true,'the first message waits until an empty thread has an actual ID');
     const item={id:'q',delivery:'rpc',answerState:'resolved',questions:[{id:'choice',title:'选择？',options:['一','二']}]};
     const html=invoke('renderQuestion',item,'q',false);assert.match(html,/提问已结束/);assert.doesNotMatch(html,/question-submit/);
     assert.match(html,/data-answer="一"[^>]* disabled/);
@@ -528,6 +582,17 @@ test('lists preserve starting numbers, nested content, and boundaries with other
   const nested=invoke('renderMarkdown','1. 外层\n   - **子项**\n   - `<script>`\n2. 下一项');
   assert.match(nested,/<li><p>外层<\/p><ul><li><strong>子项<\/strong><\/li><li><code>&lt;script&gt;<\/code><\/li><\/ul><\/li><li>下一项<\/li>/);
   assert.doesNotMatch(invoke('renderMarkdown','```\n2. 代码文本\n```'),/<ol|<li/);
+});
+
+test('Markdown quote markers become ordered quote blocks without altering comparisons or fenced code',()=>{
+  const html=invoke('renderMarkdown','面板示意：\n\n> **制作面包 ×3**\n> 预计总耗时：2 小时 20 分钟\n>\n> 前置准备\n> - 磨面粉 ×3：50 分钟\n> - 制作面团 ×3：20 分钟\n>\n> 数量：− 3 ＋　开始制作\n\n这里定几个规则。');
+  assert.match(html,/<blockquote><p><strong>制作面包 ×3<\/strong>/);
+  assert.match(html,/<ul><li>磨面粉 ×3：50 分钟<\/li><li>制作面团 ×3：20 分钟<\/li><\/ul>/);
+  assert.ok(html.indexOf('预计总耗时')<html.indexOf('前置准备'));assert.ok(html.indexOf('</blockquote>')<html.indexOf('这里定几个规则'));
+  assert.doesNotMatch(html,/&gt;/);
+  const mixed=invoke('renderMarkdown','正文 a > b\n\n```text\n> 原始代码\na > b\n```\n\n> 外层\n>> 内层\n> <script>alert(1)</script>');
+  assert.match(mixed,/<p>正文 a &gt; b<\/p>/);assert.match(mixed,/<pre><code>&gt; 原始代码\na &gt; b<\/code><\/pre>/);
+  assert.match(mixed,/<blockquote><p>外层<\/p><blockquote><p>内层<\/p><\/blockquote>/);assert.match(mixed,/&lt;script&gt;/);assert.doesNotMatch(mixed,/<script>/);
 });
 
 test('Markdown tables render headers, align columns and preserve formatted cells safely',()=>{
@@ -667,6 +732,30 @@ test('browser history requests use cursors, remove rolled-back rows and recover 
     ui.api=originalApi;ui.render=originalRender;ui.maybeMarkSessionRead=originalMarkRead;
     vm.runInContext("state.sessions=state.sessions.filter(session=>session.id!=='incremental-ui');state.views.delete('incremental-ui')",ui);delete ui.incrementalSession;
   }
+});
+
+test('streamed text and image groups keep their original interleaved positions after late completions',()=>{
+  const view={timeline:[]};
+  const emit=(method,item,at)=>invoke('applyCodex',view,{method,params:{turnId:'image-order',item}},at);
+  emit('item/started',{id:'before-image',type:'agentMessage',phase:'commentary',text:'先检查轮廓'},1000);
+  emit('item/started',{id:'first-image',type:'imageView',images:[{ref:'D:/first.png'}]},2000);
+  emit('item/started',{id:'between-images',type:'agentMessage',phase:'commentary',text:'再检查配色'},3000);
+  emit('item/started',{id:'second-image',type:'imageView',images:[{ref:'D:/second.png'}]},4000);
+  emit('item/started',{id:'after-image',type:'agentMessage',phase:'commentary',text:'最后检查材质'},5000);
+  emit('item/completed',{id:'first-image',type:'imageView',images:[{ref:'D:/first.png'}]},6000);
+  invoke('applyCodex',view,{method:'item/agentMessage/delta',params:{turnId:'image-order',itemId:'before-image',delta:'，已确认'}},7000);
+  emit('item/completed',{id:'second-image',type:'imageView',images:[{ref:'D:/second.png'}]},8000);
+  const turn=invoke('timelineTurns',view.timeline)[0];turn.status='inProgress';
+  const check=html=>{
+    const positions=['先检查轮廓',encodeURIComponent('image-order:process:first-image'),'再检查配色',encodeURIComponent('image-order:process:second-image'),'最后检查材质'].map(label=>html.indexOf(label));
+    assert.ok(positions.every((position,index)=>position>=0 && (!index || position>positions[index-1])));
+    assert.doesNotMatch(html,/<img\b/);
+    assert.equal((html.match(/aria-expanded="false"/g) || []).length,2);
+  };
+  check(invoke('renderTurn',turn));
+  turn.status='completed';turn.items.push({id:'image-final',type:'agentMessage',phase:'final_answer',text:'检查完成',at:9000});
+  vm.runInContext("state.openDetailKeys.add('image-order:history')",ui);
+  try{check(invoke('renderTurn',turn));}finally{vm.runInContext("state.openDetailKeys.delete('image-order:history')",ui);}
 });
 
 test('active turns show progress in order until completion; completed history starts collapsed',()=>{
@@ -987,6 +1076,18 @@ test('latest command outside the folded process group has an expandable detail a
     turn.items.push({...turn.activity,aggregatedOutput:'fresh streamed output'});assert.match(invoke('renderTurn',turn),/fresh streamed output/);
     turn.activity={...turn.activity,id:'cmd-b'};assert.doesNotMatch(invoke('renderTurn',turn),/live output/);
   }finally{vm.runInContext("state.openDetailKeys.delete('live-expand:activity:cmd-a')",ui);}
+});
+
+test('answer updates and late completion keep a question before the assistant continuation',()=>{
+  const view={timeline:[]},questions=normalizeQuestions([{title:'哪种访问方式？'}],'ordered-ask');
+  invoke('applyCodex',view,{method:'item/started',params:{turnId:'ordered',item:{id:'ordered-ask',type:'agentMessage',delivery:'async',questions}}},20000);
+  invoke('applyRelay',view,{type:'question_updated',itemId:'ordered-ask',patch:{answerState:'answered',questionAnswers:{[questions[0].id]:'聊天图片，外网访问'},answeredAt:30000},at:30000});
+  invoke('applyCodex',view,{method:'item/agentMessage/delta',params:{turnId:'ordered',itemId:'continuation',delta:'继续检查图片传输'}},40000);
+  invoke('applyCodex',view,{method:'item/completed',params:{turnId:'ordered',item:{id:'ordered-ask',type:'agentMessage',delivery:'async',questions}}},50000);
+  const turn=invoke('timelineTurns',view.timeline)[0];turn.status='inProgress';
+  const html=invoke('renderTurn',turn);
+  assert.equal(view.timeline.find(item=>item.id==='ordered-ask').at,20000);
+  assert.ok(html.indexOf('聊天图片，外网访问')<html.indexOf('继续检查图片传输'));
 });
 
 test('async questions keep the timer running, preserve selected drafts, and release the latest progress after an answer', () => {

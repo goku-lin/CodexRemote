@@ -28,7 +28,7 @@ test('verified file URLs remain readable after Runner media registration is lost
 
 test('model and effort selection propagates, permissions respect device requirements', () => {
   const selected = validateOptions({model:'fixture',effort:'max',permission:'workspace-write'}, catalog);
-  assert.deepEqual(threadOptions(selected), {model:'fixture',approvalPolicy:'on-request',sandbox:'workspace-write'});
+  assert.deepEqual(threadOptions(selected), {model:'fixture',config:{model_reasoning_effort:'max'},approvalPolicy:'on-request',sandbox:'workspace-write'});
   assert.deepEqual(turnOptions({...selected,cwd:'C:/project'}), {model:'fixture',effort:'max',cwd:'C:/project',approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',networkAccess:false,writableRoots:['C:/project']}});
   assert.deepEqual(turnOptions({}), {});
   assert.throws(()=>validateOptions({model:'invented'},catalog));

@@ -31,7 +31,10 @@ async function fixture(t,{existing=false,recoveryFails=false,nativeReady=!existi
   const paramEnd=service.indexOf('\n')+1;
   await writeFile(path.join(directory,'scripts','启动远程服务.ps1'),'\ufeff'+service.slice(0,paramEnd)+forbiddenQueries+service.slice(paramEnd));
   for(const name of ['启动项目.ps1','打开原生桌面连接.ps1','更新Relay后台.ps1']){
-    const source=(await readFile(new URL('../scripts/'+name,import.meta.url),'utf8')).replaceAll('http://127.0.0.1:4317',base).replace('$syncDeadline = [DateTime]::UtcNow.AddSeconds(20)','$syncDeadline = [DateTime]::UtcNow.AddMilliseconds(300)');
+    const source=(await readFile(new URL('../scripts/'+name,import.meta.url),'utf8')).replaceAll('http://127.0.0.1:4317',base).replace('$syncDeadline = [DateTime]::UtcNow.AddSeconds(20)','$syncDeadline = [DateTime]::UtcNow.AddMilliseconds(300)')
+      // A locally prepared source launcher contains absolute paths. Always
+      // intercept its launch inside this fixture, never in the real project.
+      .replace(/^& \$statusNode .*native-package-launch\.mjs.*$/m,()=>`& $statusNode ${quote(path.join(directory,'src','native-package-launch.mjs'))} --app-root $appPackage.InstallLocation --proxy $proxyExe --data-dir ${quote(path.join(directory,'.relay-data'))}`);
     await writeFile(path.join(directory,'scripts',name),source);
   }
   await writeFile(path.join(directory,'.relay-data','codex-native-proxy.exe'),'not executed: launch is intercepted by the fixture');

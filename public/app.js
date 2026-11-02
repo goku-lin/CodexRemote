@@ -174,7 +174,7 @@ function restoreReceiptOwners(){for(const [scope,draft] of Object.entries(drafts
   if(owner)for(const job of [draft.pending,draft.edit?.submission,draft.queueAction])if(job?.id)receiptDevices.set(job.id,owner);
 }}
 async function api(path,options={}){
-  const id=requestDevice(path,options,{sessions:state.sessions,selectedDeviceId:$('newTaskModal')?.classList.contains('hidden') ? state.selectedDeviceId : $('newTaskDevice')?.value,receiptDevices});
+  const id=requestDevice(path,options,{sessions:state.sessions,selectedDeviceId:state.selectedDeviceId,receiptDevices});
   if(id){try{const body=JSON.parse(options.body || '{}');if(body.requestId)receiptDevices.set(body.requestId,id);}catch{}}
   let response;
   if(id && directConnections.ready(id))response=peerResponse(await directConnections.request(id,path,options));
@@ -234,7 +234,7 @@ async function submitMessageEdit(id) {
 function renderMessageEditor(session,edit,key) {
   const pending=edit.submission,waiting=pending && pending.state!=='not-found';
   const enabled=session.controls?.edit && device(session.deviceId)?.online && state.connection==='connected' && !editSubmissions.has(session.id) && !waiting;
-  const note=pending ? pending.state==='not-found' ? '未找到发送记录，可用原编号重新发送。' : '正在核对编辑结果，内容已保留。' : session.controls?.editNeedsRestart ? '桌面代理更新将在下次从原生入口打开桌面时加载。' : !session.controls?.edit ? '请等待当前回合结束或先中断，再发送编辑内容。' : session.editRecovery?.messageId===edit.messageId ? '对话已回到编辑位置，发送会继续生成。' : '发送后，将从这条消息重新生成；后续对话记录会被替换，已修改的文件不会自动撤销。';
+  const note=pending ? pending.state==='not-found' ? '未找到发送记录，可用原编号重新发送。' : '正在核对编辑结果，内容已保留。' : session.controls?.editNeedsRestart ? '桌面代理需加载新版编辑协议，请等任务结束后通过启动器重新打开 Codex。' : !session.controls?.edit ? '请等待当前回合结束或先中断，再发送编辑内容。' : session.editRecovery?.messageId===edit.messageId ? '对话已回到编辑位置，发送会继续生成。' : '发送后，将从这条消息重新生成；后续对话记录会被替换，已修改的文件不会自动撤销。';
   return `<div class="message you inline-edit" data-node-key="${escapeHtml(key)}"><div class="message-edit-card">${renderImages(edit.images)}<textarea data-edit-input aria-label="编辑已发送消息" rows="${Math.min(12,Math.max(3,edit.text.split('\n').length))}"${waiting ? ' disabled' : ''}>${escapeHtml(edit.text)}</textarea><p class="edit-note" role="status">${escapeHtml(edit.error || note)}</p><div class="edit-actions">${waiting ? '<button class="btn" type="button" data-check-edit>重新检查</button>' : '<button class="btn" type="button" data-cancel-edit>取消</button>'}<button class="btn edit-send" type="button" data-send-edit${enabled ? '' : ' disabled'}>发送</button></div></div></div>`;
 }
 function bindMessageEditors(messages,session) {
@@ -518,6 +518,16 @@ function renderMarkdownText(value) {
       continue;
     }
     if (code) { code.push(line); continue; }
+    const quote=line.match(/^ {0,3}>[ \t]?(.*)$/);
+    if(quote) {
+      flushParagraph();const quoted=[quote[1]];
+      while(index+1<lines.length) {
+        const next=lines[index+1].match(/^ {0,3}>[ \t]?(.*)$/);
+        if(!next)break;
+        quoted.push(next[1]);index++;
+      }
+      html.push(`<blockquote>${renderMarkdownText(quoted.join('\n'))}</blockquote>`);continue;
+    }
     const cells = markdownCells(line);
     const separator = index+1 < lines.length ? markdownCells(lines[index+1]) : null;
     if (cells?.length && separator?.length === cells.length && separator.every(cell=>/^:?-+:?$/.test(cell))) {
@@ -618,13 +628,13 @@ function applyCodex(view, message, at) {
   if (method === 'item/agentMessage/delta') {
     view.activity=null; view.error=null; view.retrying=false;
     const item = upsert(view, params.itemId, { type:'agentMessage', ...(eventTurnId ? { turnId:eventTurnId } : {}) });
-    appendStreamText(item,'text',params.delta,80000); item.at = at;
+    appendStreamText(item,'text',params.delta,80000); item.at ||= at;
   } else if (method === 'item/plan/delta') {
     const item = upsert(view, params.itemId, { type:'plan', ...(eventTurnId ? { turnId:eventTurnId } : {}) });
-    appendStreamText(item,'text',params.delta,80000); item.at = at;
+    appendStreamText(item,'text',params.delta,80000); item.at ||= at;
   } else if (method === 'item/commandExecution/outputDelta') {
     const item = upsert(view, params.itemId, { type:'commandExecution', ...(eventTurnId ? { turnId:eventTurnId } : {}) });
-    appendStreamText(item,'aggregatedOutput',params.delta,24000); item.at = at;
+    appendStreamText(item,'aggregatedOutput',params.delta,24000); item.at ||= at;
   } else if (method === 'item/started' || method === 'item/completed') {
     const raw = {...params.item};
     if (raw.questions?.length) raw.questions=normalizeQuestions(raw.questions,raw.id,raw.delivery);
@@ -632,7 +642,7 @@ function applyCodex(view, message, at) {
     const id=raw.id || params.itemId,previous=view.timeline.find(item=>item.id===id);
     const status=raw.status?(['inProgress','running'].includes(raw.status)?'inProgress':'completed'):method==='item/started'?'inProgress':'completed';
     const timing=processKind(raw)==='command'?itemTiming({...raw,status},previous,{at,phase:method==='item/started'?'started':'completed'}):{};
-    const item = upsert(view, id, { ...raw,...timing,status, at: raw.at || at, ...(eventTurnId ? { turnId:eventTurnId } : {}) });
+    const item = upsert(view, id, { ...raw,...timing,status, at: previous?.at || raw.at || at, ...(eventTurnId ? { turnId:eventTurnId } : {}) });
     if (raw.type === 'fileChange' && raw.changes) view.fileChanges = raw.changes;
     if (raw.type === 'agentMessage' && raw.text) item.text = raw.text;
     if (!['agentMessage','reasoning'].includes(raw.type)) view.activity = { ...item };
@@ -746,7 +756,13 @@ function applyEvent(event) {
   if(event.type==='account_usage'){state.usages.set(event.deviceId,event);renderUsage();return;}
   if(event.type==='historical_usage'){state.historicalUsages.set(event.deviceId,event);renderUsage();if(event.status==='ready')refreshHistoricalRange(event.deviceId);return;}
   if (event.type === 'catalog') {
-    state.catalogs.set(event.deviceId, event); changed = true;
+    state.catalogs.set(event.deviceId, event);
+    const setup=state.newTaskSetup;
+    if(setup?.deviceId===event.deviceId && setup.loading && !event.pending) {
+      setup.catalogEvent=event;
+      if(setup.preferencesLoaded)finishNewTaskSettings(setup,event);
+    }
+    changed = true;
   } else if (event.type === 'projects') { state.projects = event.projects; changed = true; }
   else if (event.type === 'device') {
     const index = state.devices.findIndex(item => item.id === event.id);
@@ -843,9 +859,6 @@ const liveConnection=new LiveConnection({
 });
 
 function renderDevices() {
-  const newDevice = $('newTaskModal').classList.contains('hidden') ? state.selectedDeviceId : $('newTaskDevice').value;
-  syncHtml($('newTaskDevice'), state.devices.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${item.online ? '在线' : '离线'}</option>`).join(''));
-  $('newTaskDevice').value = state.devices.some(item=>item.id === newDevice) ? newDevice : state.devices[0]?.id || '';
   const selected = device(state.selectedDeviceId);
   if(selected)document.title=selected.name+' · Codex Relay';
   $('sidebarDot').classList.toggle('offline', !selected?.online); $('sidebarRunner').textContent = selected ? `${selected.name} · ${directConnections.ready(selected.id) ? '直连' : selected.online ? selected.executionRelay ? '主电脑中转' : '已连接' : '等待恢复'}` : '等待 Runner 连接';
@@ -1849,7 +1862,7 @@ function renderSelectors(prefix, deviceId, choices) {
   modelSelect.value = modelValue; modelSelect.disabled = !catalog;
   syncHtml(effortSelect, '<option value="">默认强度</option>' + (model?.supportedReasoningEfforts || []).map(item => `<option value="${escapeHtml(item.reasoningEffort)}">${escapeHtml(effortLabels[item.reasoningEffort] || item.reasoningEffort)}</option>`).join(''));
   effortSelect.value = choices.effort || ''; effortSelect.disabled = !model;
-  syncHtml(permissionSelect, '<option value="">沿用当前权限</option>' + (catalog?.permissions || []).map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join(''));
+  syncHtml(permissionSelect, `<option value="">${prefix ? '请选择新对话权限' : '沿用当前权限'}</option>` + (catalog?.permissions || []).map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join(''));
   permissionSelect.value = choices.permission || ''; permissionSelect.disabled = !catalog;
 }
 function renderComposer() {
@@ -1868,14 +1881,14 @@ function renderComposer() {
   // Main controls share the same implementation as the new-task selectors.
   renderSelectors('', deviceId, choices);
   renderComposerSettings(deviceId, session, choices);
-  renderSelectors('new', $('newTaskDevice').value || deviceId, { model:$('newModelSelect').value || '', effort:$('newEffortSelect').value || '', permission:$('newPermissionSelect').value || '' });
+  renderNewTaskSettings();
   const busy = ['running','starting','waiting_approval','waiting_input','interrupting'].includes(session?.status);
   const draft=drafts.get(session?.id);
   const pending=draft.pending;
   const awaiting=pending && ['queued','dispatched','uncertain','unknown'].includes(pending.state);
   const uploadTasks=imageUploads.list(composerSessionId || '$new-task');
   const uploadsBlocked=uploadTasks.some(task=>task.state==='loading' || task.state==='checking' || task.state==='uploading' || task.state==='error' && !task.dataUrl);
-  $('sendBtn').disabled = Boolean(state.restoringPreview || session?.cachedPreview || !session || !device(deviceId)?.online || state.sending || state.uploading > 0 || uploadsBlocked || state.connection!=='connected' || awaiting);
+  $('sendBtn').disabled = Boolean(state.restoringPreview || session?.cachedPreview || !session || !session.threadId || !device(deviceId)?.online || state.sending || state.uploading > 0 || uploadsBlocked || state.connection!=='connected' || awaiting);
   $('attachBtn').disabled = state.uploading > 0;
   $('sendBtn').title = busy ? '加入待发送消息' : '发送';
   $('sendBtn').setAttribute('aria-label',$('sendBtn').title);
@@ -2031,42 +2044,118 @@ async function saveDeviceSettings(event){
   catch(error){$('deviceSettingsError').textContent=error.message;}
   finally{$('saveDeviceSettingsBtn').disabled=false;}
 }
+function newTaskDeviceId() { return state.devices.find(item=>item.kind==='local')?.id || state.selectedDeviceId; }
 function renderNewTaskProjects(preferredId = $('newTaskProject').value) {
-  const deviceId = $('newTaskDevice').value;
+  const deviceId = newTaskDeviceId();
   const projects = projectsForDevice(state.projects, deviceId);
-  syncHtml($('newTaskProject'), '<option value="" disabled>选择项目</option>' + projects.map(project => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`).join('') + '<option value="device-default">设备默认目录</option>');
+  syncHtml($('newTaskProject'), '<option value="" disabled>选择项目</option>' + projects.map(project => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`).join('') + '<option value="device-default">默认目录</option>');
   $('newTaskProject').value = projects.some(project => project.id === preferredId) ? preferredId : projects.length ? '' : 'device-default';
   renderNewTaskDirectory();
 }
 function renderNewTaskDirectory() {
-  const selected = state.projects.find(project => project.id === $('newTaskProject').value);
-  const cwd = selected?.cwd || ($('newTaskProject').value === 'device-default' ? device($('newTaskDevice').value)?.cwd : null);
+  const selected = projectsForDevice(state.projects,newTaskDeviceId()).find(project => project.id === $('newTaskProject').value);
+  const cwd = selected?.cwd || ($('newTaskProject').value === 'device-default' ? device(newTaskDeviceId())?.cwd : null);
   $('newTaskDirectory').textContent = cwd ? '工作目录：' + cwd : '请选择这次任务所在的项目。';
   renderNewTaskExecution();
 }
 function renderNewTaskExecution(){
-  const native=device($('newTaskDevice').value)?.nativeDesktop;
+  const native=device(newTaskDeviceId())?.nativeDesktop;
   $('newTaskExecutionHint').textContent=$('newTaskExecutionMode').value==='runner' ? '独立执行会占用此对话；Codex 桌面同时打开时可能无法编辑。' : native?.connected && native.capabilities?.createThreads ? '手机网页与 Codex 桌面共用执行器，可以继续同一条对话。' : '桌面连接暂未支持双端新建。创建时会提示原因，不会改走独立执行。';
 }
-function openModal() { closeComposerPopovers(); const pending=drafts.get('$new-task').pending;$('newTaskExecutionMode').value=pending?.body.executionMode || 'desktop';$('newTaskDevice').value=pending?.body.deviceId || activeSession()?.deviceId || state.selectedDeviceId; renderNewTaskProjects(pending?.body.projectId || state.activeProjectId);if(pending){$('newTaskPrompt').value=pending.body.prompt;state.attachments=[...drafts.get('$new-task').attachments];} $('newTaskModal').classList.remove('hidden'); $('newTaskPrompt').focus(); $('modalError').textContent = ''; requestCatalog($('newTaskDevice').value); const choices=pending?.body || choicesFor(); renderSelectors('new', $('newTaskDevice').value, choices); }
-function closeModal() { $('newTaskModal').classList.add('hidden'); }
+function renderNewTaskSettings() {
+  const setup=state.newTaskSetup;if(!setup)return;
+  renderSelectors('new',setup.deviceId,setup.choices);
+  for(const id of ['newModelSelect','newEffortSelect','newPermissionSelect'])$(id).disabled ||= setup.loading || setup.submitting;
+  $('createTaskBtn').disabled=Boolean(setup.loading || setup.submitting);
+  $('createTaskBtn').textContent=setup.error ? '重新读取设置' : '创建对话';
+  if(setup.loading)$('modalError').textContent='正在读取新对话设置…';
+  else if(setup.error)$('modalError').textContent=setup.error;
+}
+function finishNewTaskSettings(setup,catalog) {
+  if(state.newTaskSetup!==setup)return;
+  if(setup.timeoutId)clearTimeout(setup.timeoutId);
+  const model=selectableModels(catalog).find(item=>item.model===setup.choices.model) || (!setup.choices.model ? preferredModel(catalog) : null);
+  const efforts=model?.supportedReasoningEfforts || [];
+  const desired=setup.choices.effort || model?.defaultReasoningEffort || catalog.defaultEffort;
+  const permission=setup.choices.permission ?? setup.desktopDefaultPermission ?? '';
+  setup.choices={model:setup.choices.model || model?.model || '',effort:efforts.some(item=>item.reasoningEffort===desired) ? desired : model?.defaultReasoningEffort || efforts[0]?.reasoningEffort || '',permission:catalog.permissions?.some(item=>item.id===permission) ? permission : ''};
+  setup.loading=false;setup.error=null;state.catalogs.set(setup.deviceId,catalog);$('modalError').textContent='';renderNewTaskSettings();
+}
+async function loadNewTaskSettings(setup) {
+  try {
+    const catalog=await api(`/api/devices/${encodeURIComponent(setup.deviceId)}/catalog`);
+    if(state.newTaskSetup!==setup)return;
+    if(catalog.creationSettingsRevision!==1)throw new Error('远程后台尚未加载新建对话修复，请先更新后台。');
+    setup.desktopDefaultPermission=catalog.desktopDefaultPermission;
+    setup.preferencesLoaded=true;
+    const loaded=!catalog.pending ? catalog : setup.catalogEvent;
+    if(loaded && !loaded.pending)finishNewTaskSettings(setup,loaded);
+    else {
+      setup.timeoutId=setTimeout(()=>{
+        if(state.newTaskSetup!==setup || !setup.loading)return;
+        setup.loading=false;setup.error='模型列表读取超时，请点“重新读取设置”重试。';renderNewTaskSettings();
+      },12000);
+      renderNewTaskSettings();
+    }
+  } catch(error) {
+    if(state.newTaskSetup!==setup)return;
+    setup.loading=false;setup.error=error.message;renderNewTaskSettings();
+  }
+}
+function openModal() {
+  closeComposerPopovers();const pending=drafts.get('$new-task').pending,existing=choicesFor();
+  const setup={deviceId:newTaskDeviceId(),choices:pending?.body || {model:existing.model,effort:existing.effort},loading:true};
+  state.newTaskSetup=setup;$('newTaskExecutionMode').value=pending?.body.executionMode || 'desktop';
+  renderNewTaskProjects(pending?.body.projectId || state.activeProjectId);$('newTaskModal').classList.remove('hidden');$('newTaskProject').focus();
+  renderNewTaskSettings();loadNewTaskSettings(setup);
+}
+function closeModal() { if(state.newTaskSetup?.timeoutId)clearTimeout(state.newTaskSetup.timeoutId);state.newTaskSetup=null;$('newTaskModal').classList.add('hidden'); }
+function saveNewTaskChoices(modelChanged=false) {
+  const setup=state.newTaskSetup;if(!setup || setup.loading || setup.submitting)return;
+  setup.choices={model:$('newModelSelect').value,effort:modelChanged ? '' : $('newEffortSelect').value,permission:$('newPermissionSelect').value};
+  finishNewTaskSettings(setup,state.catalogs.get(setup.deviceId));
+}
 
 async function createTask() {
-  const prompt = $('newTaskPrompt').value.trim(); if (!prompt) return ($('modalError').textContent = '请先输入任务目标。');
+  const setup=state.newTaskSetup;
+  if(setup && (setup.loading || setup.submitting))return;
+  if(setup?.error) {
+    setup.error=null;setup.loading=true;setup.preferencesLoaded=false;setup.catalogEvent=null;renderNewTaskSettings();await loadNewTaskSettings(setup);return;
+  }
+  const deviceId = newTaskDeviceId();
+  const catalog=state.catalogs.get(deviceId);
+  if(!catalog || catalog.pending)return ($('modalError').textContent='模型和权限尚未读取完成，请稍后创建。');
+  if(!catalog.models?.some(item=>item.model===$('newModelSelect').value))return ($('modalError').textContent='请选择可用的模型。');
+  if(!catalog.permissions?.some(item=>item.id===$('newPermissionSelect').value))return ($('modalError').textContent='请选择新对话的权限。');
+  if(!device(deviceId)?.online)return ($('modalError').textContent='执行电脑未连接，请恢复连接后创建。');
   const projectId = $('newTaskProject').value;
   if (!projectId) return ($('modalError').textContent = '请选择项目。');
-  const project = projectsForDevice(state.projects, $('newTaskDevice').value).find(item => item.id === projectId);
-  const cwd = project?.cwd || (projectId === 'device-default' ? device($('newTaskDevice').value)?.cwd : null);
+  const project = projectsForDevice(state.projects, deviceId).find(item => item.id === projectId);
+  const cwd = project?.cwd || (projectId === 'device-default' ? device(deviceId)?.cwd : null);
   if (!cwd) return ($('modalError').textContent = '项目已不可用，请重新选择。');
   state.restoreSessionId=null;
+  if(setup)setup.submitting=true;
   $('createTaskBtn').disabled = true;
   if($('newTaskExecutionMode').value==='desktop'){
     try{const runtime=await api('/api/runtime');if(runtime.threadOwnershipRevision!==1)throw new Error('该电脑后台尚未加载双端新建修复，请先更新远程服务。');}
-    catch(error){$('modalError').textContent=error.message;$('createTaskBtn').disabled=false;return;}
+    catch(error){if(setup)setup.submitting=false;$('modalError').textContent=error.message;$('createTaskBtn').disabled=false;return;}
   }
-  try { await imageUploads.upload(composerSessionId || '$new-task'); const title = prompt.length > 42 ? `${prompt.slice(0,42)}…` : prompt; const deviceId=$('newTaskDevice').value;const body={deviceId,title,prompt,cwd,executionMode:$('newTaskExecutionMode').value,projectId:project?.id,model:$('newModelSelect').value,effort:$('newEffortSelect').value,permission:$('newPermissionSelect').value,attachments:state.attachments.map(image=>image.id)};const previous=drafts.get('$new-task').pending;const id=previous && JSON.stringify(previous.body)===JSON.stringify(body) ? previous.id : requestId();drafts.set('$new-task',{text:prompt,attachments:[...state.attachments],pending:{id,body}}); const result = await api('/api/sessions', { method:'POST', body:JSON.stringify({...body,requestId:id}) }); drafts.set('$new-task',{text:'',attachments:[]});state.attachments=[];state.sessions=state.sessions.filter(item=>item.id!==result.session.id); state.sessions.unshift(result.session); state.activeSessionId = result.session.id; state.activeProjectId=sessionProjectId(result.session); state.selectedDeviceId = result.session.deviceId; closeModal(); render(); }
+  try {
+    if(setup && state.newTaskSetup!==setup)return;
+    const body={deviceId,cwd,executionMode:$('newTaskExecutionMode').value,projectId:project?.id,model:$('newModelSelect').value,effort:$('newEffortSelect').value,permission:$('newPermissionSelect').value};
+    const previous=drafts.get('$new-task').pending;
+    const id=previous && JSON.stringify(previous.body)===JSON.stringify(body) ? previous.id : requestId();
+    drafts.set('$new-task',{text:'',attachments:[],pending:{id,body}});
+    const result=await api('/api/sessions',{method:'POST',body:JSON.stringify({...body,requestId:id})});
+    // A new thread starts with an empty composer; existing chat drafts stay put.
+    drafts.set(result.session.id,{text:'',attachments:[]});
+    drafts.set('$new-task',{text:'',attachments:[]});
+    state.sessions=state.sessions.filter(item=>item.id!==result.session.id);state.sessions.unshift(result.session);
+    state.activeSessionId=result.session.id;state.activeProjectId=sessionProjectId(result.session);state.selectedDeviceId=result.session.deviceId;
+    closeModal();render();
+  }
   catch (error) { $('modalError').textContent = error.message; }
-  finally { $('createTaskBtn').disabled = false; }
+  finally { if(setup)setup.submitting=false;$('createTaskBtn').disabled = false; }
 }
 
 async function sendTurn() {
@@ -2129,7 +2218,6 @@ $('deviceSettingsBtn').onclick=openDeviceSettings;$('deviceSettingsForm').onsubm
 for(const id of ['closeDeviceSettingsBtn','cancelDeviceSettingsBtn'])$(id).onclick=()=>$('deviceSettingsModal').classList.add('hidden');
 $('modelSelect').onchange = () => { $('effortSelect').value=''; saveChoices(); renderComposer(); };
 $('effortSelect').onchange = $('permissionSelect').onchange = saveChoices;
-$('newTaskDevice').onchange = () => { requestCatalog($('newTaskDevice').value); renderSelectors('new',$('newTaskDevice').value,{}); renderNewTaskProjects(); };
 $('newTaskProject').onchange = renderNewTaskDirectory;
 $('modelBtn').onclick = () => toggleComposerPopover('model'); $('permissionBtn').onclick = () => toggleComposerPopover('permission');
 $('fastModeBtn').onclick = () => {
@@ -2148,7 +2236,8 @@ $('resetModelBtn').onclick = () => { const deviceId=activeSession()?.deviceId ||
 $('effortSlider').oninput = event => { const deviceId=activeSession()?.deviceId || state.selectedDeviceId; const current=effectiveSettings(state.catalogs.get(deviceId),activeSession() || {},choicesFor()); const effort=current.efforts[Number(event.target.value)]?.reasoningEffort; if (!current.model || !effort) return; renderSelectors('',deviceId,{...choicesFor(),model:current.model.model,effort}); saveChoices(); renderComposer(); };
 document.addEventListener('pointerdown', event => { if (!event.target.closest('.composer-control')) closeComposerPopovers(); });
 for (const menu of [$('modelOptions'),$('permissionMenu')]) menu.addEventListener('keydown', event => { const buttons=[...menu.querySelectorAll('button')]; const index=buttons.indexOf(document.activeElement); const next=event.key==='ArrowDown' ? (index+1)%buttons.length : event.key==='ArrowUp' ? (index-1+buttons.length)%buttons.length : event.key==='Home' ? 0 : event.key==='End' ? buttons.length-1 : -1; if (next>=0) { event.preventDefault(); buttons[next]?.focus(); } });
-$('newModelSelect').onchange = () => renderSelectors('new',$('newTaskDevice').value,{model:$('newModelSelect').value,permission:$('newPermissionSelect').value});
+$('newModelSelect').onchange = () => saveNewTaskChoices(true);
+$('newEffortSelect').onchange = $('newPermissionSelect').onchange = () => saveNewTaskChoices();
 $('attachBtn').onclick = () => $('imageInput').click(); $('imageInput').onchange = () => addImages([...$('imageInput').files]);
 $('promptInput').addEventListener('paste', event => { const files = [...event.clipboardData.items].filter(item=>item.kind==='file' && item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean); if (files.length) { event.preventDefault(); addImages(files); } });
 $('composer').addEventListener('dragover', event => { if ([...event.dataTransfer.types].includes('Files')) { event.preventDefault(); $('composer').classList.add('drag-over'); } });

@@ -10,9 +10,9 @@ import { nativeRequestMethods, validateNativeResponse } from '../public/native-r
 import {prepareMessageEdit} from './message-edit.mjs';
 
 const MAX_FRAME = 80 * 1024 * 1024;
-const ALLOWED = new Set(['thread/start','thread/read', 'thread/resume', 'thread/rollback', 'turn/start', 'turn/steer', 'turn/interrupt','thread/goal/get','thread/goal/set','thread/goal/clear']);
-const MUTATING = new Set(['thread/start','thread/resume','thread/rollback', 'turn/start', 'turn/steer', 'turn/interrupt', 'relay/respond','thread/goal/set','thread/goal/clear']);
-const CAPABILITIES = { steer: true, interrupt: true, events: true, serverRequests: true, edit: true,goals:true,createThreads:true };
+const ALLOWED = new Set(['thread/start','thread/read', 'thread/resume', 'thread/revert', 'turn/start', 'turn/steer', 'turn/interrupt','thread/goal/get','thread/goal/set','thread/goal/clear']);
+const MUTATING = new Set(['thread/start','thread/resume','thread/revert', 'turn/start', 'turn/steer', 'turn/interrupt', 'relay/respond','thread/goal/set','thread/goal/clear']);
+const CAPABILITIES = { steer: true, interrupt: true, events: true, serverRequests: true, edit: true,editRevision:2,goals:true,createThreads:true };
 const key = id => typeof id + ':' + String(id);
 const send = (stream, message) => stream.write(JSON.stringify(message) + '\n');
 
@@ -108,7 +108,7 @@ export class NativeDesktopHost {
       if (!this.initialized) {
         send(socket, { id: message.id, error: { message: '桌面 Codex 尚未初始化，请稍后重试。' } }); return;
       }
-      if(message.method==='thread/rollback' && (!Number.isInteger(message.params.numTurns) || message.params.numTurns<1 || this.activeTurns.has(message.params.threadId))) {
+      if(message.method==='thread/revert' && (typeof message.params.beforeTurnId!=='string' || !message.params.beforeTurnId.trim() || this.activeTurns.has(message.params.threadId))) {
         send(socket,{id:message.id,error:{message:'原回合仍在运行或编辑参数无效，未修改对话。'}});return;
       }
       if(message.method==='thread/goal/set' && (message.params.origin!=='user' || !['active','paused'].includes(message.params.status)) || message.method==='thread/goal/clear' && message.params.origin!=='user'){
@@ -285,7 +285,7 @@ export class NativeDesktopClient extends EventEmitter {
   }
   async edit(command,{beforeRollback=async()=>{},onRollback=async()=>{}}={}) {
     await this.connect();
-    if(!this.capabilities.edit)throw new Error('当前桌面代理尚未加载消息编辑支持；请在方便时用现有原生入口重新打开桌面。');
+    if(!this.capabilities.edit || this.capabilities.editRevision!==2)throw new Error('当前桌面代理尚未加载新版消息编辑协议；请等任务结束后通过启动器重新打开 Codex。');
     let {thread}=await this.request('thread/read',{threadId:command.threadId,includeTurns:true});
     if(thread?.status?.type==='notLoaded') {
       await this.request('thread/resume',{threadId:command.threadId,excludeTurns:true});
@@ -296,7 +296,7 @@ export class NativeDesktopClient extends EventEmitter {
     try {
       if(plan.numTurns) {
         await beforeRollback(plan);
-        const result=await this.request('thread/rollback',{threadId:command.threadId,numTurns:plan.numTurns});
+        const result=await this.request('thread/revert',{threadId:command.threadId,beforeTurnId:plan.beforeTurnId});
         rolledBack=true;this.activeTurns.delete(command.threadId);
         await onRollback(result.thread);
       }

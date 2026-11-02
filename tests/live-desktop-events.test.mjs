@@ -33,6 +33,48 @@ test('lagging history cannot erase streamed text; completed history replaces the
   assert.equal(session.liveItems.size,0);assert.equal(caughtUp.length,1);
 });
 
+test('live updates preserve authoritative history positions instead of replacing them with notification times',()=>{
+  const session={events:[]};
+  const event=(id,at,text)=>({type:'codex',at,message:{method:'item/completed',params:{turnId:'t',item:{id,type:'agentMessage',text,at}}}});
+  rememberDesktopEvent(session,event('ask',90000,'Live question'));
+  const incoming=[event('ask',1001,'Question'),event('reply',1002,'After answer')];
+  mergeDesktopHistory(session,incoming,[{id:'t',status:'inProgress'}]);
+  incoming.sort((a,b)=>a.at-b.at);
+  assert.deepEqual(incoming.map(value=>value.message.params.item.id),['ask','reply']);
+  assert.equal(incoming[0].message.params.item.at,1001);
+  assert.equal(incoming[0].message.params.item.text,'Live question');
+});
+
+test('snapshot reload keeps image groups between their surrounding streamed assistant messages',()=>{
+  const session={events:[]};
+  const event=(id,type,at,extra={})=>({type:'codex',at,message:{method:'item/completed',params:{turnId:'images',item:{id,type,at,...extra}}}});
+  const incoming=[event('text-a','agentMessage',1001,{text:'First'}),
+    event('image-a','imageView',1002,{images:[{ref:'D:/a.png'}]}),
+    event('text-b','agentMessage',1003,{text:'Second'}),
+    event('image-b','imageView',1004,{images:[{ref:'D:/b.png'}]}),
+    event('text-c','agentMessage',1005,{text:'Third'})];
+  for(const [index,entry] of incoming.entries())rememberDesktopEvent(session,{...entry,at:90000+index,message:{...entry.message,params:{...entry.message.params,item:{...entry.message.params.item,at:90000+index,...(entry.message.params.item.type==='agentMessage'?{text:'Updated '+index}:{images:[{ref:'D:/updated-'+index+'.png'}]})}}}});
+  mergeDesktopHistory(session,incoming,[{id:'images',status:'inProgress'}]);
+  incoming.sort((a,b)=>a.at-b.at);
+  assert.deepEqual(incoming.map(entry=>entry.message.params.item.id),['text-a','image-a','text-b','image-b','text-c']);
+  assert.deepEqual(incoming.map(entry=>entry.message.params.item.at),[1001,1002,1003,1004,1005]);
+  assert.equal(incoming[1].message.params.item.images[0].ref,'D:/updated-1.png');
+});
+
+test('reload before history catches up keeps an image at its first observed position',()=>{
+  const session={events:[]};
+  const event=(method,id,type,at,extra={})=>({type:'codex',at,message:{method,params:{turnId:'lagging',item:{id,type,...extra}}}});
+  rememberDesktopEvent(session,event('item/started','picture','imageView',2000,{images:[{ref:'D:/a.png'}]}));
+  rememberDesktopEvent(session,event('item/completed','after','agentMessage',3000,{text:'图片之后的说明'}));
+  rememberDesktopEvent(session,event('item/completed','picture','imageView',4000,{images:[{ref:'D:/a.png'}]}));
+  const incoming=[event('item/completed','before','agentMessage',1000,{text:'图片之前的说明'})];
+  mergeDesktopHistory(session,incoming,[{id:'lagging',status:'inProgress'}]);
+  incoming.sort((a,b)=>a.at-b.at);
+  assert.deepEqual(incoming.map(entry=>entry.message.params.item.id),['before','picture','after']);
+  assert.equal(incoming[1].message.params.item.at,2000);
+  assert.equal(session.liveItems.get('picture').at,4000,'snapshot freshness still uses the latest notification time');
+});
+
 test('persisted command completion retires a stale running overlay even while the turn keeps executing',()=>{
   const event=(method,item,at)=>({type:'codex',message:{method,params:{threadId:'thread',turnId:'t',item}},at});
   for(const status of ['completed','failed','interrupted']){

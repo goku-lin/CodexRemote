@@ -17,7 +17,7 @@ const command={threadId:'original',messageId:'extra',editTurnId:'first',original
 
 test('history editing preserves earlier inputs and images in the same turn and truncates the edited suffix',()=>{
   const plan=prepareMessageEdit(sample(),command);
-  assert.equal(plan.numTurns,2);assert.equal(plan.prefixLength,2);
+  assert.equal(plan.numTurns,2);assert.equal(plan.beforeTurnId,'first');assert.equal(plan.prefixLength,2);
   assert.deepEqual(plan.input,[{type:'text',text:'原请求'},{type:'localImage',path:'C:/image.png'},{type:'text',text:'改后的追加要求'}]);
   assert.deepEqual(prepareMessageEdit(sample(),{...command,messageId:'u1',originalText:'原请求',text:'新请求'}).input,[{type:'text',text:'新请求'},{type:'localImage',path:'C:/image.png'}]);
 });
@@ -34,7 +34,7 @@ async function nativeFixture(t,{rejectStart=false}={}) {
   host=new NativeDesktopHost({endpointFile,writeDesktop:()=>{},writeCore:message=>{
     core.push(message);
     if(message.method==='thread/read')host.fromCore({id:message.id,result:{thread}});
-    else if(message.method==='thread/rollback') {thread.turns.splice(-message.params.numTurns);host.fromCore({id:message.id,result:{thread}});}
+    else if(message.method==='thread/revert') {assert.deepEqual(Object.keys(message.params).sort(),['beforeTurnId','threadId']);const index=thread.turns.findIndex(turn=>turn.id===message.params.beforeTurnId);assert.ok(index>=0);thread.turns.splice(index);host.fromCore({id:message.id,result:{thread}});}
     else if(message.method==='turn/start')host.fromCore(rejectStart ? {id:message.id,error:{message:'Selected model is at capacity.'}} : {id:message.id,result:{turn:{id:'edited'}}});
   }});
   await host.listen();host.fromDesktop({method:'initialized'});
@@ -46,24 +46,35 @@ async function nativeFixture(t,{rejectStart=false}={}) {
 test('native history edit rolls back once on the original writer, preserves images and starts ordinary input without touching Goal',async t=>{
   const f=await nativeFixture(t),saved=[];
   await f.client.edit(command,{beforeRollback:async plan=>saved.push(plan),onRollback:async thread=>assert.equal(thread.turns.length,0)});
-  assert.deepEqual(f.core.map(message=>message.method),['thread/read','thread/rollback','turn/start']);
-  assert.equal(f.core[1].params.threadId,'original');assert.equal(f.core[1].params.numTurns,2);assert.equal(saved.length,1);
+  assert.deepEqual(f.core.map(message=>message.method),['thread/read','thread/revert','turn/start']);
+  assert.equal(f.core[1].params.threadId,'original');assert.equal(f.core[1].params.beforeTurnId,'first');assert.equal(saved.length,1);
   assert.deepEqual(f.core[2].params.input,saved[0].input);
   assert.ok(!f.core.some(message=>/goal|fork/.test(message.method)));
 });
 test('native editing refuses an old proxy or a Desktop turn that starts during validation',async t=>{
   const f=await nativeFixture(t);await f.client.connect();f.client.capabilities.edit=false;
-  await assert.rejects(f.client.edit(command),/尚未加载消息编辑/);assert.equal(f.core.length,0);
+  await assert.rejects(f.client.edit(command),/尚未加载新版消息编辑/);assert.equal(f.core.length,0);
   f.client.capabilities.edit=true;
+  f.client.capabilities.editRevision=1;
+  await assert.rejects(f.client.edit(command),/新版消息编辑/);assert.equal(f.core.length,0,'an old proxy cannot dispatch the unsupported history mutation');
+  f.client.capabilities.editRevision=2;
   await assert.rejects(f.client.edit(command,{beforeRollback:async()=>{f.host.fromCore({method:'turn/started',params:{threadId:'original',turn:{id:'raced'}}});}}),/原回合仍在运行/);
-  assert.equal(f.core.some(message=>message.method==='thread/rollback'),false);assert.equal(f.thread.turns.length,2);
+  assert.equal(f.core.some(message=>message.method==='thread/revert'),false);assert.equal(f.thread.turns.length,2);
 });
 test('a failed model start after rollback preserves a recovery input and recovery does not roll back twice',async t=>{
   const f=await nativeFixture(t,{rejectStart:true});let saved;
   await assert.rejects(f.client.edit(command,{beforeRollback:async plan=>{saved=plan;}}),error=>error.rolledBack && /capacity/.test(error.message));
   await assert.rejects(f.client.edit({...command,expectedLastTurnId:null,recoveryInput:saved.input}),/capacity/);
-  assert.equal(f.core.filter(message=>message.method==='thread/rollback').length,1);
+  assert.equal(f.core.filter(message=>message.method==='thread/revert').length,1);
   assert.deepEqual(f.core.filter(message=>message.method==='turn/start')[1].params.input,saved.input);
+});
+
+test('editing a later turn preserves every earlier turn and addresses the cut by native turn ID',async t=>{
+  const f=await nativeFixture(t);
+  await f.client.edit({...command,messageId:'u2',editTurnId:'second',originalText:'后续请求',text:'修改第二轮'});
+  assert.deepEqual(f.thread.turns.map(turn=>turn.id),['first']);
+  assert.deepEqual(f.core.find(message=>message.method==='thread/revert').params,{threadId:'original',beforeTurnId:'second'});
+  assert.deepEqual(f.core.find(message=>message.method==='turn/start').params.input,[{type:'text',text:'修改第二轮'}]);
 });
 test('waiting inputs survive a Relay restart and never become replayable model commands until explicitly dispatched',async t=>{
   const directory=await mkdtemp(path.join(os.tmpdir(),'relay-waiting-'));
@@ -88,7 +99,7 @@ async function serverFixture(t) {
   const get=async url=>(await fetch(base+url)).json();
   const stream=await fetch(base+'/api/runner/local/commands',{headers:{'x-codex-relay-token':'fixture-token'},signal:abort.signal});
   const reader=stream.body.getReader();void (async()=>{let buffered='';try {while(true){const {done,value}=await reader.read();if(done)break;buffered+=new TextDecoder().decode(value);const frames=buffered.split('\n\n');buffered=frames.pop();for(const frame of frames){const data=frame.split('\n').find(line=>line.startsWith('data:'));if(data)commands.push(JSON.parse(data.slice(5)));}}}catch{/* fixture closes stream */}})();
-  await post('/api/runner/local/events',{type:'native_status',connected:true,capabilities:{steer:true,interrupt:true,edit:true},activeTurns:{}});
+  await post('/api/runner/local/events',{type:'native_status',connected:true,capabilities:{steer:true,interrupt:true,edit:true,editRevision:2},activeTurns:{}});
   await post('/api/runner/local/events',{type:'thread_list',threads:[{id:'original',cwd:directory,status:{type:'idle'},createdAt:1,updatedAt:2}]});
   const session=(await get('/api/sessions')).sessions[0],id=session.id;
   const event=message=>post('/api/runner/local/events',{sessionId:id,origin:'desktop',message});
@@ -141,7 +152,9 @@ test('inline edit checks native capability and source token; duplicate submissio
   assert.equal((await f.post(url,{...body,expectedToken:'stale'})).status,409);
   await f.post('/api/runner/local/events',{type:'native_status',connected:true,capabilities:{steer:true},activeTurns:{}});
   assert.equal((await f.post(url,body)).status,409);
-  await f.post('/api/runner/local/events',{type:'native_status',connected:true,capabilities:{edit:true},activeTurns:{}});
+  await f.post('/api/runner/local/events',{type:'native_status',connected:true,capabilities:{edit:true,editRevision:1},activeTurns:{}});
+  assert.equal((await f.post(url,body)).status,409);
+  await f.post('/api/runner/local/events',{type:'native_status',connected:true,capabilities:{edit:true,editRevision:2},activeTurns:{}});
   assert.deepEqual((await Promise.all([f.post(url,body),f.post(url,body)])).map(reply=>reply.status),[202,202]);
   const commands=await waitFor(()=>f.commands.filter(c=>c.type==='editMessage'),items=>items.length===1);assert.equal(commands[0].originalText,'原请求');assert.equal(commands[0].editTurnId,'first');
   await f.event({method:'runner/editRolledBack',params:{deliveryId:body.requestId,thread:{id:'original',status:{type:'idle'},turns:[]}}});

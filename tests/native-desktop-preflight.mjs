@@ -58,6 +58,23 @@ try {
   const serverRequestSchema = JSON.parse(await readFile(path.join(schemaDir,schemaFiles.find(name=>name.endsWith('ServerRequest.json'))),'utf8'));
   const methods = serverRequestSchema.oneOf.map(variant=>variant.properties.method.enum?.[0] || variant.properties.method.const);
   for(const method of ['item/tool/requestUserInput','item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval','mcpServer/elicitation/request']) assert.ok(methods.includes(method),'Missing native request: '+method);
+  const clientRequestSchema=JSON.parse(await readFile(path.join(schemaDir,schemaFiles.find(name=>name.endsWith('ClientRequest.json'))),'utf8'));
+  const clientMethods=clientRequestSchema.oneOf.map(variant=>variant.properties.method.enum?.[0] || variant.properties.method.const);
+  assert.ok(clientMethods.includes('thread/revert'),'The installed CLI does not support the edit history method.');
+  const revertSchema=JSON.parse(await readFile(path.join(schemaDir,schemaFiles.find(name=>name.endsWith('ThreadRevertParams.json'))),'utf8'));
+  let generatedRevert;
+  const editThread={id:threadId,status:{type:'idle'},turns:[{id:'schema-edit-turn',status:'completed',items:[{id:'schema-user',type:'userMessage',text:'original'}]}]};
+  schemaClient.capabilities={edit:true,editRevision:2};
+  schemaClient.request=async(method,params)=>{
+    if(method==='thread/read')return {thread:editThread};
+    if(method==='thread/revert'){generatedRevert=params;return {thread:{...editThread,turns:[]}};}
+    assert.equal(method,'turn/start');return {turn:{id:'schema-check-only'}};
+  };
+  await schemaClient.edit({threadId,messageId:'schema-user',editTurnId:'schema-edit-turn',originalText:'original',text:'edited',expectedLastTurnId:'schema-edit-turn'});
+  for(const name of revertSchema.required || [])assert.ok(Object.hasOwn(generatedRevert,name),'Missing edit history field: '+name);
+  for(const name of Object.keys(generatedRevert))assert.ok(Object.hasOwn(revertSchema.properties,name),'Unknown edit history field: '+name);
+  assert.equal(generatedRevert.beforeTurnId,'schema-edit-turn');
+  console.log(JSON.stringify({editMethod:'thread/revert',editHistoryRequired:revertSchema.required,editSenderFieldsMatch:true,editRequestsDispatched:0}));
   console.log(JSON.stringify({ textInputRequired: textSchema.required, turnStartRequired: turnSchema.required, senderFieldsMatch: true }));
 
   const configurationFile = path.join(directory, 'config.json');
@@ -93,6 +110,7 @@ try {
   client = new NativeDesktopClient({ CODEX_RELAY_NATIVE_ENDPOINT: endpointFile }, 5000);
   await client.connect();
   assert.equal(client.capabilities.events,true);assert.equal(client.capabilities.serverRequests,true);
+  assert.equal(client.capabilities.editRevision,2);
   await client.subscribe([threadId]);
   const { thread } = await client.request('thread/read', { threadId, includeTurns: false });
   assert.equal(thread.id, threadId);

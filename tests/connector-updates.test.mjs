@@ -46,6 +46,8 @@ test('release signatures survive publisher restart, reject foreign publishers, t
   const source={schema:1,publicKey:key.publicKey,urls:['http://192.168.1.10:4317'],sequence:4};
   const manifest=signRelease({version:'a'.repeat(20),filename:'CodexRemote-Portable-v0.2.0-win-x64.zip',size:100,sha256:'b'.repeat(64),sequence:4},key);
   assert.equal(verifyRelease(manifest,source).version,manifest.version);
+  const lanManifest=signRelease({...manifest,filename:'connector-'+ 'c'.repeat(20)+'.zip'},key);
+  assert.equal(verifyRelease(lanManifest,source).filename,lanManifest.filename);
   assert.throws(()=>verifyRelease({...manifest,sha256:'c'.repeat(64)},source),/签名/);
   const other=await releaseSigningKey(path.join(directory,'other'));
   assert.throws(()=>verifyRelease(signRelease(manifest,other),source),/签名/);

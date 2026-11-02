@@ -87,6 +87,7 @@ test('browser → Runner → original Desktop supports steer, actual question/ap
   assert.deepEqual(imageMessage.params.input,[{type:'text',text:imageBody.text},{type:'image',url:dataUrl}]);
   assert.equal(core.filter(message=>message.method==='turn/steer' && message.params.input.some(part=>part.type==='image')).length,1);
 
+  assert.ok([...host.peers].some(peer=>peer.authenticated && peer.threads.has('original')),'the event subscription must be installed before an accepted send');
   notify('item/started',{item:{id:'reply',type:'agentMessage',text:'',phase:'commentary'}});
   notify('item/agentMessage/delta',{itemId:'reply',delta:'正在检查'});
   notify('item/agentMessage/delta',{itemId:'reply',delta:'原问题'});

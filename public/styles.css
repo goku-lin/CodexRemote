@@ -187,6 +187,9 @@ body.is-resizing .app { transition:none; }
 .process-note { color:var(--text); font-size:14px; line-height:1.7; }
 .markdown p { margin:0 0 12px; }
 .markdown p:last-child { margin-bottom:0; }
+.markdown blockquote { margin:12px 0; padding:6px 0 6px 14px; border-left:3px solid var(--line); color:var(--text); }
+.markdown blockquote blockquote { margin-block:8px; }
+.markdown blockquote > :last-child { margin-bottom:0; }
 .markdown ul,.markdown ol { padding-left:24px; margin:0 0 12px; }
 .markdown code { background:rgba(141,154,170,.15); border-radius:4px; padding:1px 4px; font:12px ui-monospace,Consolas,monospace; }
 .markdown a { color:var(--blue); text-decoration:none; }

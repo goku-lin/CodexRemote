@@ -64,4 +64,36 @@ test('archive snapshots, restore, desktop idle and cancelled history stay consis
   await runner({type:'thread_list',threads:[],complete:true,observedAt:7000});
   assert.equal((await snapshot()).sessions.length,0);
   assert.equal((await snapshot()).projects.length,0);
+  const migrated={id:'desktop-game',name:'Game',cwd:'E:\\Game'};
+  const moved=[{id:'old',name:'Old',cwd:'D:\\Game',relayProject:migrated},{id:'new',name:'New',cwd:'E:\\Game',relayProject:migrated}];
+  await runner({type:'thread_list',threads:moved,complete:true,observedAt:8000});
+  let result=await snapshot();
+  assert.equal(result.projects.length,1);assert.equal(result.projects[0].sessionCount,2);
+  assert.equal(result.projects[0].cwd,'E:\\Game');
+  assert.equal(result.sessions.find(s=>s.threadId==='old').cwd,'D:\\Game');
+  assert.equal(new Set(result.sessions.map(s=>s.projectId)).size,1);
+  // A project move alone must invalidate the metadata signature, even when no
+  // thread timestamp or historical cwd changes.
+  const stableId=result.projects[0].id;
+  await runner({type:'thread_list',threads:moved.map(t=>({...t,relayProject:{...migrated,cwd:'F:\\Game'}})),complete:true,observedAt:9000});
+  result=await snapshot();assert.equal(result.projects[0].id,stableId);assert.equal(result.projects[0].cwd,'F:\\Game');
+  const oldSession=result.sessions.find(s=>s.threadId==='old');
+  await runner({sessionId:oldSession.id,message:{method:'thread/started',params:{thread:{id:'old',cwd:'D:\\Game',turns:[]}}}});
+  assert.equal((await snapshot()).sessions.find(s=>s.id===oldSession.id).projectId,stableId);
+  const hiddenThread={id:'hidden',name:'Hidden',cwd:'D:\\Hidden'};
+  await runner({type:'thread_list',threads:[...moved,hiddenThread],complete:true,observedAt:10000});
+  const hiddenPathId=(await snapshot()).projects.find(p=>p.cwd==='D:\\Hidden').id;
+  const hiddenOldId=(await snapshot()).projects.find(p=>p.cwd==='E:\\Game').id;
+  // One hidden old path merged into a visible project must not hide everything.
+  const pathThread={id:'extra',name:'Extra',cwd:'C:\\Game 3'};
+  await runner({type:'thread_list',threads:[...moved,hiddenThread,pathThread],complete:true,observedAt:11000});
+  const extraId=(await snapshot()).projects.find(p=>p.cwd==='C:\\Game 3').id;
+  await fetch(base+'/api/projects',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({hiddenProjects:[hiddenPathId,extraId]})});
+  const mappedHidden={...hiddenThread,relayProject:{id:'hidden-project',name:'Hidden',cwd:'E:\\Hidden'}};
+  await runner({type:'thread_list',threads:[...moved,mappedHidden,{...pathThread,relayProject:migrated}],complete:true,observedAt:12000});
+  result=await snapshot();
+  assert.equal(result.projects.find(p=>p.cwd==='E:\\Hidden').hidden,true);
+  assert.equal(result.projects.find(p=>p.id===hiddenOldId).hidden,false);
+  assert.equal(result.projects.find(p=>p.id===hiddenOldId).sessionCount,3);
+  assert.equal(result.sessions.some(s=>s.threadId==='extra'),true);
 });

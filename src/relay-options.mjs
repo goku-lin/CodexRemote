@@ -35,10 +35,20 @@ export function validateOptions(body, catalog = {}) {
 export function threadOptions(command) {
   const options = {};
   if (command.model) options.model = command.model;
+  if (command.effort) options.config = {model_reasoning_effort:command.effort};
   if (command.serviceTier) options.serviceTier = command.serviceTier === 'default' ? null : command.serviceTier;
   const permission = permissionModes.find(item => item.id === command.permission);
   if (permission) Object.assign(options, { approvalPolicy: permission.approvalPolicy, sandbox: permission.sandbox });
   return options;
+}
+
+export function confirmedThreadSettings(result) {
+  const settings={};
+  if(result.model)settings.nativeModel=result.model;
+  if(Object.hasOwn(result,'reasoningEffort'))settings.nativeEffort=result.reasoningEffort;
+  const permission=({readOnly:'read-only',workspaceWrite:'workspace-write',dangerFullAccess:'danger-full-access'})[result.sandbox?.type];
+  if(permission)settings.nativePermission=permission;
+  return settings;
 }
 
 export function turnOptions(command) {

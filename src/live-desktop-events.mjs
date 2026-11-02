@@ -26,13 +26,13 @@ export function rememberDesktopEvent(session, event) {
   }
   if (['item/started', 'item/completed'].includes(message.method) && itemId) {
     const previous = session.liveItems.get(itemId);
-    const item={...previous?.message.params.item,...params.item,status:message.method==='item/started'?'inProgress':'completed'};
+    const item={...previous?.message.params.item,...params.item,status:message.method==='item/started'?'inProgress':'completed',at:previous?.message.params.item.at || previous?.at || params.item.at || event.at};
     if(!['agentMessage','userMessage','reasoning'].includes(item.type))Object.assign(item,itemTiming(item,previous?.message.params.item,{at:event.at,phase:message.method==='item/started'?'started':'completed'}));
     session.liveItems.set(itemId, { ...event, message: { method: message.method, params: { ...params, item } } });
   } else if (itemId && ['item/agentMessage/delta', 'item/plan/delta', 'item/commandExecution/outputDelta'].includes(message.method)) {
     const type = message.method === 'item/plan/delta' ? 'plan' : message.method === 'item/commandExecution/outputDelta' ? 'commandExecution' : 'agentMessage';
     const previous = session.liveItems.get(itemId);
-    const item = { id: itemId, type, status: 'inProgress', ...previous?.message.params.item };
+    const item = { id: itemId, type, status: 'inProgress', ...previous?.message.params.item,at:previous?.message.params.item.at || previous?.at || event.at };
     if(type==='commandExecution'&&!item.startedAt)item.timingSource='unknown';
     const field = type === 'commandExecution' ? 'aggregatedOutput' : 'text';
     const limit = field === 'aggregatedOutput' ? 24000 : 80000;
@@ -76,8 +76,10 @@ export function mergeDesktopHistory(session, incoming, turns) {
     const fields = ['text', 'aggregatedOutput', 'changes', 'images'];
     const caughtUp = stored && item.status === 'completed' && fields.every(field => item[field] == null || JSON.stringify(item[field]) === JSON.stringify(stored[field]));
     if (caughtUp || (turn && !['inProgress', 'running'].includes(turn.status) && item.status !== 'completed')) { session.liveItems.delete(id); continue; }
-    if (index >= 0) incoming[index] = event;
-    else incoming.push(event);
+    // The native page owns item order. Its timestamps can be turn-relative
+    // offsets, so a later stream notification must only replace the content.
+    if (index >= 0) incoming[index] = {...event,at:incoming[index].at,message:{...event.message,params:{...event.message.params,item:{...item,at:stored.at || incoming[index].at}}}};
+    else incoming.push({...event,at:item.at || event.at});
   }
   if (liveTurn) {
     const index = turns.findIndex(turn => turn.id === liveTurn.id);

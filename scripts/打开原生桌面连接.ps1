@@ -5,7 +5,7 @@ if (-not $appPackage) { throw '未找到 Codex 桌面应用。' }
 $desktopCandidates = @(Get-Process -Name ChatGPT -ErrorAction SilentlyContinue)
 $existing = $desktopCandidates | Where-Object { $_.Path -like '*\WindowsApps\OpenAI.Codex_*\app\ChatGPT.exe' }
 if (-not $existing -and @($desktopCandidates | Where-Object { -not $_.Path }).Count) { throw '无法核对 Codex 桌面进程，请在打开 Codex 的同一 Windows 用户下运行此入口。' }
-if ($existing) { Write-Host '请先等待当前任务结束并关闭 Codex 桌面，再运行此入口。此脚本不会结束正在运行的任务。'; Read-Host '按回车退出'; exit 1 }
+if ($existing) { throw '请先等待当前任务结束并正常关闭 Codex，再通过应用启动。' }
 $proxyExe = Join-Path $projectRoot '.relay-data\codex-native-proxy.exe'
 if (-not (Test-Path -LiteralPath $proxyExe)) { throw '请先在项目目录运行 npm run connect:desktop 准备启动器。' }
 $statusNode = if ($env:CODEX_NODE_PATH) { $env:CODEX_NODE_PATH } else { (Get-Command node.exe -ErrorAction Stop).Source }

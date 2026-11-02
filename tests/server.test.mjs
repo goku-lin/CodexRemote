@@ -126,6 +126,17 @@ test('unchanged histories do not publish; changed outputs and split UTF-8 arrive
   const restored=(await get(historyUrl)).events.find(event=>event.message?.params?.item.id === 'ask').message.params.item;
   assert.equal(restored.answerState,'forwarded');assert.deepEqual(restored.questionAnswers,answers);
 
+  // Native pages use ordered offsets; a later live card notification must not
+  // overwrite that position with wall-clock time when the snapshot reloads.
+  await post(runner,{origin:'desktop',sessionId:session.id,message:{method:'item/completed',params:{threadId:'test-thread',turnId:'turn',item:{id:'ask',type:'agentMessage',delivery:'async',questions,text:'Live question'}}}});
+  payload.items.push({id:'after-answer',turnId:'turn',role:'assistant',phase:'commentary',text:'检查外网图片传输',at:22000});
+  await post(runner,payload);
+  const ordered=(await get(historyUrl)).events;
+  const card=ordered.find(event=>event.message?.params?.item.id==='ask');
+  assert.equal(card.at,21000);assert.equal(card.message.params.item.at,21000);
+  assert.equal(card.message.params.item.questionAnswers[questions[0].id],'Wi-Fi');
+  assert.ok(ordered.indexOf(card)<ordered.findIndex(event=>event.message?.params?.item.id==='after-answer'));
+
   // Runner input requests use their native answer shape, never approval decisions.
   await post(runner,{sessionId:session.id,message:{id:77,method:'item/tool/requestUserInput',params:{threadId:'test-thread',turnId:'turn',itemId:'rpc-ask',isBlocking:true,questions:[{id:'connection',header:'连接',question:'如何连接？',options:[{label:'Wi-Fi',description:'同一网络'}]}]}}});
   assert.equal((await get('/api/sessions')).sessions[0].status,'waiting_input');

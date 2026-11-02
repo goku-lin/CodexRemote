@@ -5,7 +5,8 @@ import crypto from 'node:crypto';
 import { projectRoot } from './layout.mjs';
 import { supervise } from './supervisor.mjs';
 import { DeliveryStore, persistentToken } from './reliability.mjs';
-import { validateOptions } from './relay-options.mjs';
+import { validateOptions,confirmedThreadSettings } from './relay-options.mjs';
+import {readDesktopNewChatPermission} from './desktop-preferences.mjs';
 import {ComposerRequests,goalChange,validatedContext,selectedContextInput} from './composer-context.mjs';
 import { decodeImage, imageReferences, mediaReferences } from './media.mjs';
 import {serveMedia,serveImageBytes} from './media-http.mjs';
@@ -200,8 +201,8 @@ function sessionControls(session) {
   return { steer: active && (!desktop || Boolean(native?.connected && native.capabilities?.steer)),
     interrupt: active && (!desktop || Boolean(native?.connected && native.capabilities?.interrupt)),
     nativeEvents: Boolean(native?.connected && native.capabilities?.events),
-    edit: Boolean(!session.hidden && !session.pendingSend && !session.pendingEdit && !['running','starting','waiting_input','waiting_approval','interrupting'].includes(session.status) && devices.get(session.deviceId)?.online && (!desktop || native?.connected && native.capabilities?.edit)),
-    editNeedsRestart: Boolean(desktop && native?.connected && !native.capabilities?.edit) };
+    edit: Boolean(!session.hidden && !session.pendingSend && !session.pendingEdit && !['running','starting','waiting_input','waiting_approval','interrupting'].includes(session.status) && devices.get(session.deviceId)?.online && (!desktop || native?.connected && native.capabilities?.edit && native.capabilities.editRevision===2)),
+    editNeedsRestart: Boolean(desktop && native?.connected && (!native.capabilities?.edit || native.capabilities.editRevision!==2)) };
 }
 
 function catalogFor(deviceId) {
@@ -292,6 +293,10 @@ function record(session, value) {
   if (session) {
     event = compactLiveEvent(value);
     if (!session.events) session.events = [];
+    if(value.type==='user_message' && session.autoTitle && !session.events.some(item=>item.type==='user_message')) {
+      const title=String(value.text || '').trim().replace(/\s+/g,' ');
+      session.title=title ? [...title].slice(0,42).join('')+([...title].length>42?'…':'') : '图片消息';
+    }
     session.events.push(event);
     if (session.events.length > MAX_SESSION_EVENTS) session.events.splice(0, session.events.length - MAX_SESSION_EVENTS);
   }
@@ -323,7 +328,8 @@ function findSession(deviceId, sessionId, message) {
 
 function importedSessionId(deviceId, threadId) { return `thread-${deviceId}-${threadId}`; }
 
-function projectFor(deviceId, cwd) {
+function projectFor(deviceId, cwd, desktopProject) {
+  if(desktopProject?.id && desktopProject.name && desktopProject.cwd)return {id:`project-${deviceId}:desktop:${desktopProject.id}`,name:desktopProject.name,cwd:desktopProject.cwd,desktopProject};
   const normalized = String(cwd || defaultCwd).replace(/[\\/]+$/, '') || defaultCwd;
   const name = normalized.split(/[\\/]/).filter(Boolean).at(-1) || '未命名项目';
   return { id: `project-${deviceId}:${normalized.toLowerCase()}`, name, cwd: normalized };
@@ -406,7 +412,7 @@ function projectCatalog() {
   const projects = new Map();
   for (const session of sessions.values()) {
     if(session.relayMetadata || session.archived)continue;
-    const project = projectFor(session.deviceId, session.cwd);
+    const project = projectFor(session.deviceId, session.cwd,session.desktopProject);
     if (!projects.has(project.id)) projects.set(project.id, { ...project, deviceId: session.deviceId, sessionCount: 0, hidden: preferences.hiddenProjects.includes(project.id) });
     projects.get(project.id).sessionCount++;
   }
@@ -466,7 +472,7 @@ function importThreadHistory(session, thread) {
   if (!thread || !session) return;
   session.threadId = thread.id || session.threadId;
   session.cwd = thread.cwd || session.cwd;
-  const project = projectFor(session.deviceId, session.cwd);
+  const project = projectFor(session.deviceId, session.cwd,session.desktopProject);
   session.projectId = project.id; session.projectName = project.name; session.projectCwd = project.cwd;
   session.threadStatus = thread.status?.type || null;
   const allTurns = Array.isArray(thread.turns) ? thread.turns : [];
@@ -534,7 +540,7 @@ function importRolloutHistory(session, history) {
   for (const question of session.questionItems?.values() || []) {
     if (!turns.some(turn=>turn.id === question.turnId)) continue;
     const existing=incoming.find(event=>event.message?.params?.item.id === question.id);
-    if (existing) Object.assign(existing.message.params.item,question);
+    if (existing) Object.assign(existing.message.params.item,question,{at:existing.at});
     else incoming.push({type:'codex',sessionId:session.id,deviceId:session.deviceId,message:{method:'item/completed',params:{item:question,threadId:session.threadId,turnId:question.turnId}},at:question.at});
   }
   applyDesktopRuntime(session,turns);
@@ -585,12 +591,29 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
     createdAt: thread?.createdAt || null,
     status: thread?.status?.type || null,
     cwd: thread?.cwd || null,
+    relayProject: thread?.relayProject || null,
     model: thread?.model || null,
     path: thread?.path || null
   }))});
   if (runnerThreadSignatures.get(deviceId) === signature) return;
   runnerThreadSignatures.set(deviceId, signature);
   let visibilityChanged = false;
+  // Preserve project visibility when path-based groups gain Desktop identity.
+  // A merged project stays visible if any of its previous groups was visible.
+  const previousHidden=new Set(preferences.hiddenProjects),mappedGroups=new Map();
+  for(const thread of list)if(thread?.relayProject){
+    const id=projectFor(deviceId,thread.cwd,thread.relayProject).id;
+    if(!mappedGroups.has(id))mappedGroups.set(id,new Set());
+    mappedGroups.get(id).add(projectFor(deviceId,thread.cwd).id);
+  }
+  const nextHidden=new Set(previousHidden);
+  for(const [id,aliases] of mappedGroups)if([...aliases].some(alias=>previousHidden.has(alias))){
+    if([...aliases].every(alias=>previousHidden.has(alias)))nextHidden.add(id);
+    for(const alias of aliases)nextHidden.delete(alias);
+  }
+  if(JSON.stringify([...nextHidden])!==JSON.stringify(preferences.hiddenProjects)){
+    preferences.hiddenProjects=[...nextHidden];savePreferences();visibilityChanged=true;
+  }
   const present = new Set(list.map(thread=>thread?.id).filter(Boolean));
   if (complete) for (const session of sessions.values()) {
     if (session.deviceId !== deviceId || !session.threadId || session.archived || present.has(session.threadId)
@@ -600,7 +623,7 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
   }
   const performance=performanceSettings(preferences.performance?.[deviceId]);
   // Project-scoped warming is requested by the browser, which knows its current project.
-  const recentHistoryThreads = new Set((performance.preloadEnabled && performance.preloadScope==='all' ? list.filter(thread=>thread?.id && !preferences.hiddenProjects.includes(projectFor(deviceId,thread.cwd || devices.get(deviceId)?.cwd || defaultCwd).id)).slice(0,performance.preloadCount) : []).map(thread=>thread?.id).filter(Boolean));
+  const recentHistoryThreads = new Set((performance.preloadEnabled && performance.preloadScope==='all' ? list.filter(thread=>thread?.id && !preferences.hiddenProjects.includes(projectFor(deviceId,thread.cwd || devices.get(deviceId)?.cwd || defaultCwd,thread.relayProject).id)).slice(0,performance.preloadCount) : []).map(thread=>thread?.id).filter(Boolean));
   list.forEach((thread, index) => {
     if (!thread?.id) return;
     let session = [...sessions.values()].find(item => item.deviceId === deviceId && item.threadId === thread.id);
@@ -611,7 +634,7 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
     const updatedAt = (thread.updatedAt || thread.createdAt || Date.now() / 1000) * 1000;
     let historyChanged = created || !session?.historyLoaded;
     if (!session) {
-      const project = projectFor(deviceId, thread.cwd || devices.get(deviceId)?.cwd || defaultCwd);
+      const project = projectFor(deviceId, thread.cwd || devices.get(deviceId)?.cwd || defaultCwd,thread.relayProject);
       session = {
         id: importedSessionId(deviceId, thread.id),
         title: threadTitle(thread),
@@ -621,6 +644,7 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
         projectId: project.id,
         projectName: project.name,
         projectCwd: project.cwd,
+        desktopProject: thread.relayProject || null,
         model: thread.model || null,
         status: threadStatus(thread),
         threadStatus: thread.status?.type || null,
@@ -638,16 +662,23 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
     } else if (session.source === 'imported') {
       const previousUpdatedAt = session.updatedAt || 0;
       const previousThreadStatus = session.threadStatus || null;
-      const project = projectFor(deviceId, thread.cwd || session.cwd);
+      const project = projectFor(deviceId, thread.cwd || session.cwd,thread.relayProject);
       session.title = threadTitle(thread);
       session.cwd = thread.cwd || session.cwd;
       session.projectId = project.id; session.projectName = project.name; session.projectCwd = project.cwd;
+      session.desktopProject = thread.relayProject || null;
       if (!session.historyLoaded) session.status = threadStatus(thread);
       session.threadStatus = session.executionOwner==='desktop' && session.desktopRuntime ? session.desktopRuntime.status.type : thread.status?.type || null;
       session.threadPath = thread.path || session.threadPath || null;
       session.updatedAt = Math.max(updatedAt, session.updatedAt || 0);
       const statusChanged = previousThreadStatus !== session.threadStatus;
       historyChanged = updatedAt > previousUpdatedAt || statusChanged;
+    }
+    if(session.source!=='imported'){
+      if((thread.name || thread.preview)?.trim())session.title=threadTitle(thread);
+      session.desktopProject=thread.relayProject || null;
+      const project=projectFor(deviceId,thread.cwd || session.cwd,session.desktopProject);
+      session.projectId=project.id;session.projectName=project.name;session.projectCwd=project.cwd;
     }
     session.listedThread = true;
     session.hidden = Boolean(session.archived) || preferences.hiddenProjects.includes(session.projectId);
@@ -848,6 +879,9 @@ function handleRunnerMessage(deviceId, payload) {
     broadcast('relay', { type: 'runner_message', deviceId, message });
     return;
   }
+  if(message.method==='thread/name/updated' && message.params?.threadName?.trim()) {
+    session.title=message.params.threadName.trim();session.autoTitle=false;publishSession(session);return;
+  }
   if(payload.origin==='desktop') {
     if(message.method==='turn/completed' && session.desktopRuntime?.status.type==='active' && session.desktopRuntime.turnId && session.desktopRuntime.turnId!==message.params.turn.id && !payload.desktopRuntime)return;
     if(!payload.desktopRuntime && ['turn/started','turn/completed','thread/status/changed'].includes(message.method)) {
@@ -963,6 +997,8 @@ function handleRunnerMessage(deviceId, payload) {
 
   if (message.id !== undefined && message.result?.thread?.id && !session.threadId) {
     session.threadId = message.result.thread.id;
+    Object.assign(session,confirmedThreadSettings(message.result));
+    session.nativeSettingsAt=Date.now();
     session.status = 'ready';
     record(session, { type: 'thread_ready', sessionId: session.id, threadId: session.threadId, at: Date.now() });
     if (session.initialPrompt || session.initialAttachments?.length) {
@@ -973,7 +1009,7 @@ function handleRunnerMessage(deviceId, payload) {
       session.status = 'running';
       record(session, { type: 'user_message', sessionId: session.id, text, images: (session.initialAttachments || []).map(({ dataUrl, ...image }) => image), at: Date.now() });
       session.initialAttachments = [];
-    }
+    } else updateDelivery(session,'accepted');
   }
 
   if (message.method && message.id !== undefined && message.params?.threadId) {
@@ -1040,7 +1076,8 @@ function handleRunnerMessage(deviceId, payload) {
       const item=message.params.item;
       item.questions=normalizeQuestions(item.questions,item.id,item.delivery || 'async');item.delivery ||= 'async';
       Object.assign(item,session.questionResponses?.get(item.id) || {});
-      (session.questionItems ||= new Map()).set(item.id,{...item,turnId:message.params.turnId,at});
+      item.at=session.questionItems?.get(item.id)?.at || item.at || at;
+      (session.questionItems ||= new Map()).set(item.id,{...item,turnId:message.params.turnId});
     }
     rememberDesktopEvent(session,compactLiveEvent({type:'codex',sessionId:session.id,deviceId,message,at}));
   }
@@ -1479,7 +1516,7 @@ async function route(req, res) {
     const deviceId = decodeURIComponent(catalogRoute[1]);
     const catalog = catalogs.get(deviceId);
     if (!catalog) queueCommand(deviceId, { type: 'readCatalog' });
-    return sendJson(res, 200, catalogFor(deviceId));
+    return sendJson(res, 200, {...catalogFor(deviceId),creationSettingsRevision:1,...(deviceId===localDeviceId ? {desktopDefaultPermission:await readDesktopNewChatPermission()} : {})});
   }
   if (catalogRoute && catalogRoute[2]==='refresh' && req.method === 'POST') {
     const deviceId = decodeURIComponent(catalogRoute[1]);
@@ -1633,13 +1670,18 @@ async function route(req, res) {
       if(ownershipReleases.has(deviceId))return sendError(res,409,'正在交接空闲执行器，请稍后创建。');
       const executionMode=creationMode(body,device);
       const id = crypto.randomUUID();
-      const options = sessionOptions(body, null, deviceId);
+      const defaultPermission=executionMode==='desktop' && !body.permission && deviceId===localDeviceId ? await readDesktopNewChatPermission() : null;
+      // Reading Desktop preferences yields; another copy of this same request
+      // may have created the thread while that read was in progress.
+      const repeated=check && deliveries.check(body.requestId,'create',body).old;
+      if(repeated)return sendJson(res,201,{...repeated.response,session:serializeSession(sessions.get(repeated.sessionId)),delivery:deliveryResult(repeated)});
+      const options = sessionOptions({...body,...(defaultPermission ? {permission:defaultPermission} : {})}, null, deviceId);
       const attachments = attachmentsFor(body);
       const selectedProject = body.projectId ? projectCatalog().find(project => project.id === body.projectId && project.deviceId === deviceId && !project.hidden) : null;
       if (body.projectId && !selectedProject) return sendError(res, 400, '项目已不可用，请重新选择。');
       const cwd = selectedProject?.cwd || body.cwd || device.cwd || defaultCwd;
-      const project = projectFor(deviceId, cwd);
-      const session = { id, title: body.title || '新的 Codex 任务', deviceId, executionMode, threadId: null, cwd, projectId: project.id, projectName: project.name, projectCwd: project.cwd, ...options, status: 'starting', createdAt: Date.now(), updatedAt: Date.now(), events: [], initialPrompt: body.prompt || (attachments.length ? '请查看附图。' : ''), initialAttachments: attachments };
+      const project = projectFor(deviceId, cwd,selectedProject?.desktopProject);
+      const session = { id, title: body.title || '新对话',autoTitle:!body.title, deviceId, executionMode, threadId: null, cwd, desktopProject:selectedProject?.desktopProject || null, projectId: project.id, projectName: project.name, projectCwd: project.cwd, ...options, status: 'starting', createdAt: Date.now(), updatedAt: Date.now(), events: [], initialPrompt: body.prompt || (attachments.length ? '请查看附图。' : ''), initialAttachments: attachments };
       sessions.set(id, session);
       const command={type:'startThread',sessionId:id,cwd:session.cwd,executionMode,...options,...(check ? {deliveryId:check.id} : {})};
       const response={session:serializeSession(session)};
@@ -1679,7 +1721,7 @@ async function route(req, res) {
       const body=await parseBody(req),check=deliveries.check(body.requestId,`edit:${session.id}:${editMessage[2]}`,body);
       if(!check)return sendError(res,400,'编辑缺少发送编号。');
       if(check.old)return sendJson(res,202,{...check.old.response,delivery:deliveryResult(check.old)});
-      if(!sessionControls(session).edit)return sendError(res,409,sessionControls(session).editNeedsRestart ? '当前桌面代理尚未加载消息编辑支持，请在方便时用现有原生入口重新打开桌面。' : '请等待当前回合结束或先中断，再发送编辑内容。');
+      if(!sessionControls(session).edit)return sendError(res,409,sessionControls(session).editNeedsRestart ? '当前桌面代理尚未加载新版消息编辑协议，请等任务结束后通过启动器重新打开 Codex。' : '请等待当前回合结束或先中断，再发送编辑内容。');
       const id=decodeURIComponent(editMessage[2]),target=(session.events || []).find(event=>event.type==='user_message' && messageKey(event)===id);
       const recovery=session.editRecovery?.messageId===id && session.editRecovery.token===body.recoveryToken ? session.editRecovery : null;
       if(!recovery && (!target || messageToken(target)!==body.expectedToken || !editableMessages(session).some(value=>value.id===id && value.lastTurnId===body.expectedLastTurnId)))return sendError(res,409,'对话内容已经改变，请同步后重新编辑。');

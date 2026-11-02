@@ -25,6 +25,7 @@ import {readPaginatedThread,restoreCommandTiming} from './thread-history.mjs';
 import {DesktopRuntimeReader} from './desktop-runtime.mjs';
 import {ThreadOwnership} from './thread-ownership.mjs';
 import {mergeModelCatalog,readDesktopModelCache} from './model-catalog.mjs';
+import {readDesktopProjects} from './desktop-projects.mjs';
 
 const server = process.env.CODEX_RELAY_SERVER || 'http://127.0.0.1:4317';
 const deviceId = process.env.CODEX_RELAY_DEVICE_ID || 'local';
@@ -45,7 +46,7 @@ let rpcId = 1;
 let codex;
 let runnerGeneration=randomUUID(),readerResetting=false;
 const retiringReaders=new WeakSet();
-const runnerMutations=new Set(['thread/start','thread/resume','thread/rollback','turn/start','turn/steer','turn/interrupt','thread/goal/set','thread/goal/clear']);
+const runnerMutations=new Set(['thread/start','thread/resume','thread/revert','turn/start','turn/steer','turn/interrupt','thread/goal/set','thread/goal/clear']);
 let lastThreadListSignature = '';
 let threadListRead = null;
 let hiddenCwds = new Set();
@@ -276,7 +277,7 @@ async function enrichThreadList(threads) {
 }
 
 async function publishThreadList(message, observedAt = Date.now()) {
-  const threads = await enrichThreadList(message.result?.data || []);
+  const threads = await readDesktopProjects(await enrichThreadList(message.result?.data || []),path.dirname(rolloutRoot));
   for (const thread of threads) if (thread.historyMode) threadHistoryModes.set(thread.id,thread.historyMode);
   const signature = JSON.stringify(threads.map(thread => ({
     id: thread?.id || null,
@@ -286,6 +287,7 @@ async function publishThreadList(message, observedAt = Date.now()) {
     createdAt: thread?.createdAt || null,
     status: thread?.status?.type || null,
     cwd: thread?.cwd || null,
+    relayProject: thread?.relayProject || null,
     model: thread?.model || null,
     historyMode:thread?.historyMode || null,
     path: thread?.path || null
@@ -533,7 +535,7 @@ async function handleCommand(command) {
           ({thread}=await callRpc(command.sessionId,'thread/read',{threadId:command.threadId,includeTurns:true}));
         }
         const plan=prepareMessageEdit(thread,command);
-        if(plan.numTurns) {await beforeRollback(plan);const result=await callRpc(command.sessionId,'thread/rollback',{threadId:command.threadId,numTurns:plan.numTurns});command.rolledBack=true;await onRollback(result.thread);}
+        if(plan.numTurns) {await beforeRollback(plan);const result=await callRpc(command.sessionId,'thread/revert',{threadId:command.threadId,beforeTurnId:plan.beforeTurnId});command.rolledBack=true;await onRollback(result.thread);}
         await callRpc(command.sessionId,'turn/start',{threadId:command.threadId,input:plan.input,...turnOptions(command)});
       }
     } catch(error) {await publish({method:'runner/actionError',params:{action:'edit',message:error.message,ambiguous:Boolean(error.ambiguous),rolledBack:Boolean(error.rolledBack || command.rolledBack)}},command.sessionId);}
@@ -630,6 +632,14 @@ async function handleCommand(command) {
 }
 
 async function sendThroughDesktop(command) {
+  if(desktopBridge.native.configured) {
+    // Install the event subscription before starting or steering the model.
+    // The periodic sync may still be establishing the first subscription.
+    nativeSubscriptions.add(command.threadId);
+    await desktopBridge.native.refreshConnection();
+    await desktopBridge.native.subscribe([...nativeSubscriptions]);
+    nativeSubscriptionSignature=JSON.stringify([...nativeSubscriptions].sort());
+  }
   const paths=await rolloutPathsFor(command.threadId);
   if (command.permission && !historyReaders.get(command.threadId)?.settings?.permission && paths.length) {
     await publishRolloutHistory({type:'readThread',sessionId:command.sessionId,threadId:command.threadId,cwd:command.cwd,path:paths,maxTurns:5});

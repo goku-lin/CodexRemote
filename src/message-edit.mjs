@@ -32,7 +32,7 @@ export function prepareMessageEdit(thread, command) {
   if(thread.status?.type==='active' || thread.turns.some(turn=>turn.status==='inProgress'))throw new Error('原回合仍在运行，请先等待完成或中断后再编辑。');
   const latest=thread.turns.at(-1)?.id || null;
   if(latest!==command.expectedLastTurnId)throw new Error('对话已经有新消息，请同步后重新编辑。');
-  if(command.recoveryInput)return {input:command.recoveryInput,numTurns:0};
+  if(command.recoveryInput)return {input:command.recoveryInput,numTurns:0,beforeTurnId:null};
   const index=thread.turns.findIndex(turn=>turn.id===command.editTurnId);
   if(index<0)throw new Error('这条消息已改变，请同步后重新编辑。');
   const users=(thread.turns[index].items || []).filter(item=>item.type==='userMessage');
@@ -51,5 +51,5 @@ export function prepareMessageEdit(thread, command) {
     return parts;
   });
   if(!input.length)throw new Error('请输入消息或保留原图片。');
-  return {input,prefixLength,numTurns:thread.turns.length-index};
+  return {input,prefixLength,numTurns:thread.turns.length-index,beforeTurnId:thread.turns[index].id};
 }
