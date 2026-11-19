@@ -682,6 +682,30 @@ test('small session patches compare supplied metadata without reading or seriali
   assert.equal(invoke('sessionPatchChanged',null,{id:'new'}),true);
 });
 
+test('streaming output respects the latest session status and only refreshes the active timeline',()=>{
+  const names=['scheduleRender','observeTaskNotices','scheduleResumeSave'];
+  const saved=new Map(names.map(name=>[name,ui[name]])),renders=[];
+  const original=vm.runInContext('({sessions:state.sessions,views:state.views,active:state.activeSessionId})',ui);
+  const preloader=vm.runInContext('historyPreloader',ui),schedule=preloader.schedule;
+  ui.scheduleRender=options=>renders.push(options?.timelineOnly ? 'timeline' : 'full');
+  ui.observeTaskNotices=()=>{};ui.scheduleResumeSave=()=>{};preloader.schedule=()=>{};
+  try {
+    vm.runInContext("state.sessions=[{id:'active',status:'running'},{id:'background',status:'running'}];state.activeSessionId='active';state.views=new Map();viewFor(state.sessions[0]);",ui);
+    invoke('applyEvent',{type:'session',id:'active',status:'done',activeTurnId:null});
+    const delta=id=>({type:'codex',sessionId:id,message:{method:'item/agentMessage/delta',params:{itemId:'reply',delta:'text'}},at:1});
+    invoke('applyEvent',delta('active'));
+    invoke('applyEvent',delta('background'));
+    assert.deepEqual(renders,['full','timeline']);
+    assert.equal(vm.runInContext('state.sessions[0].status',ui),'done');
+    assert.equal(vm.runInContext("state.views.get('background').timeline[0].text",ui),'text');
+  } finally {
+    ui.streamTestOriginal=original;
+    vm.runInContext('state.sessions=streamTestOriginal.sessions;state.views=streamTestOriginal.views;state.activeSessionId=streamTestOriginal.active',ui);
+    delete ui.streamTestOriginal;
+    preloader.schedule=schedule;for(const [name,value] of saved)ui[name]=value;
+  }
+});
+
 test('live events from a cold conversation do not evict the eight warm histories or the current draft',()=>{
   vm.runInContext("var warmCacheSaved={sessions:state.sessions,active:state.activeSessionId,selected:state.selectedDeviceId,views:state.views};state.sessions=[];state.activeSessionId='hot-0';state.selectedDeviceId='local';state.views=new Map();",ui);
   try{

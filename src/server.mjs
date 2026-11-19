@@ -230,6 +230,7 @@ function serializeSession(session, includeEvents = true) {
     editRecovery:session.editRecovery || null,
     historyLoaded: Boolean(session.historyLoaded),
     historyLimit: session.historyLimit || null,
+    historyError: session.historyError || null,
     cwd: session.cwd,
     projectId: session.projectId || null,
     projectName: session.projectName || null,
@@ -519,11 +520,13 @@ function importRolloutHistory(session, history) {
   const turns = (history.turns || []).map(turn => ({...turn}));
   rememberDesktopRuntime(session,history.desktopRuntime);
   session.historyRequested = false;
+  const recoveredHistory = Boolean(session.historyError);
+  session.historyError = null;
   const latest = turns.at(-1);
   if (session.pendingSend) {
     if (latest?.startedAt >= session.pendingSend.at - 1000 && latest.id !== session.pendingSend.previousTurnId) { session.pendingSend = null; updateDelivery(session,'accepted'); }
     else if (Object.values(deliveries.data.requests).some(item=>item.sessionId===session.id && item.state==='uncertain')) session.pendingSend=null;
-    else { if (permissionChanged || settingsChanged || usageChanged) publishSession(session); return; }
+    else { if (permissionChanged || settingsChanged || usageChanged || recoveredHistory) publishSession(session); return; }
   }
   const incoming = [];
   for (const item of items) {
@@ -547,7 +550,7 @@ function importRolloutHistory(session, history) {
   mergeDesktopHistory(session, incoming, turns);
   incoming.sort((a,b)=>a.at-b.at);
   const version = crypto.createHash('sha256').update(JSON.stringify({ incoming, turns, messageCount, turnCount, nativePermission:session.nativePermission, nativeServiceTier:session.nativeServiceTier })).digest('hex');
-  if (session.historyVersion === version) { if (settingsChanged || usageChanged) publishSession(session); return; }
+  if (session.historyVersion === version) { if (settingsChanged || usageChanged || recoveredHistory) publishSession(session); return; }
   session.events = [{ type: 'thread_ready', sessionId: session.id, threadId: session.threadId, at: session.createdAt }, ...incoming];
   session.turns = turns;
   session.turnCount = turnCount;
@@ -614,6 +617,12 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
   if(JSON.stringify([...nextHidden])!==JSON.stringify(preferences.hiddenProjects)){
     preferences.hiddenProjects=[...nextHidden];savePreferences();visibilityChanged=true;
   }
+  const sessionsByThread = new Map();
+  for (const session of sessions.values()) {
+    if (session.deviceId === deviceId && session.threadId && !sessionsByThread.has(session.threadId)) {
+      sessionsByThread.set(session.threadId, session);
+    }
+  }
   const present = new Set(list.map(thread=>thread?.id).filter(Boolean));
   if (complete) for (const session of sessions.values()) {
     if (session.deviceId !== deviceId || !session.threadId || session.archived || present.has(session.threadId)
@@ -622,12 +631,13 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
     setSessionArchived(session, true, observedAt); visibilityChanged = true;
   }
   const performance=performanceSettings(preferences.performance?.[deviceId]);
+  const historyCommands = [];
   // Project-scoped warming is requested by the browser, which knows its current project.
   const recentHistoryThreads = new Set((performance.preloadEnabled && performance.preloadScope==='all' ? list.filter(thread=>thread?.id && !preferences.hiddenProjects.includes(projectFor(deviceId,thread.cwd || devices.get(deviceId)?.cwd || defaultCwd,thread.relayProject).id)).slice(0,performance.preloadCount) : []).map(thread=>thread?.id).filter(Boolean));
-  list.forEach((thread, index) => {
-    if (!thread?.id) return;
-    let session = [...sessions.values()].find(item => item.deviceId === deviceId && item.threadId === thread.id);
-    if (session?.archiveChangedAt > observedAt) return;
+  for (const thread of list) {
+    if (!thread?.id) continue;
+    let session = sessionsByThread.get(thread.id);
+    if (session?.archiveChangedAt > observedAt) continue;
     if (session?.archived) { setSessionArchived(session, false, observedAt); visibilityChanged = true; }
     const previousMetadata = session ? serializeSession(session, false) : null;
     const created = !session;
@@ -659,6 +669,7 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
         historyLoaded: false
       };
       sessions.set(session.id, session);
+      sessionsByThread.set(thread.id, session);
     } else if (session.source === 'imported') {
       const previousUpdatedAt = session.updatedAt || 0;
       const previousThreadStatus = session.threadStatus || null;
@@ -686,13 +697,14 @@ function syncThreadList(deviceId, threads, {complete = false, observedAt = Date.
     if (shouldRead && !session.hidden) {
       session.historyRequested = true;
       session.historyLimit ||= performance.historyTurns;
-      queueCommand(deviceId, { type: 'readThread', sessionId: session.id, threadId: thread.id, cwd: session.cwd, path: session.threadPath, maxTurns: session.historyLimit,historyRevision:session.historyRevision || 0 });
+      historyCommands.push({ type: 'readThread', sessionId: session.id, threadId: thread.id, cwd: session.cwd, path: session.threadPath, maxTurns: session.historyLimit,historyRevision:session.historyRevision || 0 });
     }
     const nextMetadata = serializeSession(session, false);
     if (!session.hidden && (created || JSON.stringify(previousMetadata) !== JSON.stringify(nextMetadata))) publishSession(session);
-  });
+  }
   broadcast('projects', { projects: projectCatalog() });
   updateProjectSubscriptions(deviceId);
+  for (const command of historyCommands) queueCommand(deviceId, command);
   if (visibilityChanged) publishSnapshot();
 }
 
@@ -777,9 +789,10 @@ function handleRunnerMessage(deviceId, payload) {
         if (session && !payload.pendingRequests.some(request => request.threadId === session.threadId && requestKey(request.requestId) === requestKey(requestId))) resolveServerRequest(session,requestId);
       }
     }
+    const threadStates = Array.isArray(payload.threadStates) ? new Map(payload.threadStates.map(state => [state.threadId, state])) : null;
     for (const session of sessions.values()) if (session.deviceId === deviceId && !session.hidden) {
-      if(Array.isArray(payload.threadStates)) {
-        const state=payload.connected && payload.threadStates.find(state=>state.threadId===session.threadId);
+      if(threadStates) {
+        const state=payload.connected && threadStates.get(session.threadId);
         if(!state)continue;
         const before=JSON.stringify(serializeSession(session,false)),previous=session.desktopRuntime;
         if(!rememberDesktopRuntime(session,state))continue;
@@ -865,6 +878,19 @@ function handleRunnerMessage(deviceId, payload) {
     if (session && !session.hidden) return importRolloutHistory(session, payload);
     return;
   }
+  if (payload.type === 'thread_history_error') {
+    const session = sessions.get(payload.sessionId);
+    if (session?.deviceId !== deviceId || session.threadId !== payload.threadId || session.hidden
+      || payload.historyRevision !== (session.historyRevision || 0)) return;
+    const requested = session.historyRequested;
+    session.historyRequested = false;
+    const error = typeof payload.error === 'string' && payload.error ? payload.error.slice(0, 500) : '读取对话失败。';
+    if (requested || session.historyError !== error) {
+      session.historyError = error;
+      publishSession(session);
+    }
+    return;
+  }
   const session = findSession(deviceId, payload.sessionId, payload.message);
   const message = payload.message || {};
   if (['thread/archived','thread/unarchived'].includes(message.method)) {
@@ -913,7 +939,11 @@ function handleRunnerMessage(deviceId, payload) {
     }
     publishSession(session); return;
   }
-  const previousNativeMetadata = payload.origin === 'desktop' ? JSON.stringify(serializeSession(session,false)) : null;
+  const desktopEvent = payload.origin === 'desktop';
+  const outputDelta = desktopEvent && session.executionOwner === 'desktop' && !payload.desktopRuntime
+    && session.events?.length < MAX_SESSION_EVENTS
+    && ['item/agentMessage/delta','item/plan/delta','item/commandExecution/outputDelta'].includes(message.method);
+  const previousNativeMetadata = desktopEvent && !outputDelta ? JSON.stringify(serializeSession(session,false)) : null;
   if (payload.origin === 'desktop') session.executionOwner = 'desktop';
   if (payload.origin === 'desktop' && message.method === 'relay/requestClaimed') {
     for (const pending of [...pendingQuestions.values(),...pendingApprovals.values()]) if (pending.sessionId === session.id && requestKey(pending.requestId ?? pending.id) === requestKey(message.params.requestId)) {
@@ -991,6 +1021,7 @@ function handleRunnerMessage(deviceId, payload) {
   }
 
   if (payload.rpcMethod === 'thread/read' && message.result?.thread) {
+    if (payload.historyRevision != null && payload.historyRevision !== (session.historyRevision || 0)) return;
     importThreadHistory(session, message.result.thread);
     return;
   }
@@ -1082,6 +1113,7 @@ function handleRunnerMessage(deviceId, payload) {
     rememberDesktopEvent(session,compactLiveEvent({type:'codex',sessionId:session.id,deviceId,message,at}));
   }
   record(session, { type: 'codex', sessionId: session.id, deviceId, message, at });
+  if (outputDelta) return;
   applyDesktopRuntime(session);
   if (previousNativeMetadata === null || previousNativeMetadata !== JSON.stringify(serializeSession(session,false))) publishSession(session);
   if(message.method==='turn/completed')releaseQueuedInput(session);
@@ -1106,9 +1138,8 @@ function runnerConnect(req, res, deviceId) {
   queueCommand(deviceId, { type: 'readCatalog' });
   if (!accountUsages.has(deviceId)) queueCommand(deviceId, {type:'readUsage'});
   flushQueue(deviceId, res);
-  // A recovered Runner has empty rollout subscriptions and media references.
-  // Restore only histories that were already loaded; hidden projects stay idle.
-  for (const session of sessions.values()) if (session.deviceId===deviceId && session.historyLoaded && !session.hidden) requestSessionHistory(session,true,historyWindow(session));
+  // Restore loaded histories and requests that may have been lost with the old stream.
+  for (const session of sessions.values()) if (session.deviceId===deviceId && (session.historyLoaded || session.historyRequested) && !session.hidden) requestSessionHistory(session,true,historyWindow(session));
   broadcast('device', serializeDevice(device));
   const close = () => {
     if (runnerStreams.get(deviceId) !== res) return;

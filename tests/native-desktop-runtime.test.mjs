@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {desktopRuntimePath,refreshDesktopRuntime} from '../src/native-desktop-runtime.mjs';
+import {desktopRuntimePath,installedDesktopCli,refreshDesktopRuntime} from '../src/native-desktop-runtime.mjs';
 
 async function fixture(t){
   const directory=await mkdtemp(path.join(os.tmpdir(),'relay desktop runtime 含空格 '));
@@ -37,6 +37,15 @@ test('the next launch follows a desktop app update without requiring a new conne
   await refreshDesktopRuntime(f.config,current.root,{run});
   assert.equal(JSON.parse(await readFile(f.config,'utf8')).cliPath,current.file);
   assert.equal(await readFile(f.endpoint,'utf8'),'existing live connection record');
+});
+
+test('Runner resolves the installed Desktop build even when its inherited package path still exists',async t=>{
+  const f=await fixture(t),old=await f.app('WindowsApps/OpenAI.Codex_old'),current=await f.app('WindowsApps/OpenAI.Codex_current');
+  const options={platform:'win32',resolveRoot:async()=>current.root};
+  assert.equal(await installedDesktopCli(old.file,options),current.file);
+  assert.equal(await installedDesktopCli(undefined,options),current.file);
+  const custom=await f.app('explicit-cli');
+  assert.equal(await installedDesktopCli(custom.file,options),null);
 });
 
 test('an unavailable or broken current desktop runtime leaves the previous configuration intact',async t=>{

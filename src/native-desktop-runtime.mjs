@@ -29,6 +29,12 @@ export async function installedDesktopRoot(){
   return stdout.trim();
 }
 
+export async function installedDesktopCli(configuredPath,{platform=process.platform,resolveRoot=installedDesktopRoot}={}){
+  if(platform!=='win32' || configuredPath && !/[\\/]WindowsApps[\\/]OpenAI\.Codex_/i.test(configuredPath))return null;
+  try{return await desktopRuntimePath(await resolveRoot());}
+  catch{return null;}
+}
+
 export async function refreshDesktopRuntime(configFile,appRoot,{run=execute}={}){
   const previous=JSON.parse(await readFile(configFile,'utf8'));
   const cliPath=await desktopRuntimePath(appRoot);

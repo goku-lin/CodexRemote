@@ -26,6 +26,7 @@ import {DesktopRuntimeReader} from './desktop-runtime.mjs';
 import {ThreadOwnership} from './thread-ownership.mjs';
 import {mergeModelCatalog,readDesktopModelCache} from './model-catalog.mjs';
 import {readDesktopProjects} from './desktop-projects.mjs';
+import {installedDesktopCli} from './native-desktop-runtime.mjs';
 
 const server = process.env.CODEX_RELAY_SERVER || 'http://127.0.0.1:4317';
 const deviceId = process.env.CODEX_RELAY_DEVICE_ID || 'local';
@@ -49,6 +50,7 @@ const retiringReaders=new WeakSet();
 const runnerMutations=new Set(['thread/start','thread/resume','thread/revert','turn/start','turn/steer','turn/interrupt','thread/goal/set','thread/goal/clear']);
 let lastThreadListSignature = '';
 let threadListRead = null;
+let threadListRefreshTimer = null;
 let hiddenCwds = new Set();
 const resumedThreads = new Set();
 const activeTurns = new Map();
@@ -58,12 +60,17 @@ const desktopThreads = new Set();
 const desktopRuntimeStates = new Map();
 const threadHistoryModes = new Map();
 let nativeSubscriptions = new Set(), nativeSubscriptionSignature = '', nativeStatusSignature = '', nativeSyncing = false;
+let nativeRuntimeRefresh = null;
 const nativeEvents = new EventBuffer(), nativeEpoch = randomUUID();
 const desktopRuntime=new DesktopRuntimeReader(desktopBridge.native,{epoch:nativeEpoch});
 let nativeSequence = 0, nativeFlushTask = null;
 desktopBridge.native.on('notification', message => {
   const threadId = message.params?.threadId;
-  if (!threadId || !nativeSubscriptions.has(threadId)) return;
+  if (!threadId) return;
+  if (!nativeSubscriptions.has(threadId)) {
+    if (message.method === 'turn/started' || message.method === 'thread/status/changed' && message.params.status?.type === 'active') scheduleThreadListRefresh();
+    return;
+  }
   if (message.method === 'thread/status/changed') desktopRuntimeStates.set(threadId, message.params.status?.type);
   if (message.method === 'turn/started') desktopRuntimeStates.set(threadId, 'active');
   if (message.method === 'turn/completed') desktopRuntimeStates.set(threadId, 'idle');
@@ -103,7 +110,14 @@ async function syncNativeDesktop() {
       await native.subscribe([...nativeSubscriptions]); nativeSubscriptionSignature = signature;
     }
     desktopRuntime.retain(nativeSubscriptions);
-    await desktopRuntime.refresh([...new Set([...native.activeTurns.keys(),...historyCommands.keys(),...desktopRuntime.states.keys()])].filter(id=>nativeSubscriptions.has(id)));
+    if (!nativeRuntimeRefresh && native.connected) {
+      const tracked = [...new Set([...native.activeTurns.keys(), ...historyCommands.keys(), ...desktopRuntime.states.keys()])]
+        .filter(id => nativeSubscriptions.has(id));
+      // Reconnecting and publishing ready must not wait for old thread reads.
+      nativeRuntimeRefresh = desktopRuntime.refresh(tracked)
+        .catch(error => console.error('桌面状态读取失败：' + error.message))
+        .finally(() => { nativeRuntimeRefresh = null; });
+    }
   } catch { nativeSubscriptionSignature = ''; }
   finally {
     await flushNativeEvents();
@@ -114,10 +128,14 @@ async function syncNativeDesktop() {
     nativeSyncing = false;
   }
 }
-desktopBridge.native.on('connection', connected => { if (!connected) { nativeSubscriptionSignature = ''; desktopRuntimeStates.clear();desktopRuntime.clear(); } });
+desktopBridge.native.on('connection', connected => {
+  if (connected) scheduleThreadListRefresh();
+  else { nativeSubscriptionSignature = ''; desktopRuntimeStates.clear();desktopRuntime.clear(); }
+});
 const mediaReferences = new Map();
 const normalizeCwd = value => String(value || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
-const hiddenCommand = command => hiddenCwds.has(normalizeCwd(command.cwd));
+// Desktop projects can share a folder. A visible thread's membership takes precedence.
+const hiddenCommand = command => !nativeSubscriptions.has(command.threadId) && hiddenCwds.has(normalizeCwd(command.cwd));
 
 function headers() { return { 'content-type': 'application/json', 'x-codex-relay-token': token }; }
 
@@ -125,7 +143,7 @@ async function post(path, payload) {
   try { const response = await fetch(`${server}${path}`, { method: 'POST', headers: headers(), body: JSON.stringify(payload), signal: AbortSignal.timeout(10_000) }); return response.ok; } catch { return false; }
 }
 
-function sendRpc(sessionId, method, params, completion = null) {
+function sendRpc(sessionId, method, params, completion) {
   if(readerResetting)throw new Error('空闲执行器正在释放占用，请稍后重试。');
   const id = rpcId++;
   pending.set(id, { sessionId, method, completion });
@@ -221,6 +239,16 @@ async function listThreads() {
   try { await threadListRead; } finally { threadListRead = null; }
 }
 
+function scheduleThreadListRefresh() {
+  if (threadListRefreshTimer !== null) return;
+  threadListRefreshTimer = setTimeout(async () => {
+    // An in-flight list may have captured its first page before this event.
+    if (threadListRead) await threadListRead;
+    threadListRefreshTimer = null;
+    await listThreads();
+  }, 350);
+}
+
 function sessionForMessage(message) {
   if (message.params?.threadId && threadSessions.has(message.params.threadId)) return threadSessions.get(message.params.threadId);
   if (message.id !== undefined && pending.has(message.id)) return pending.get(message.id).sessionId;
@@ -304,6 +332,13 @@ const historyReads = new Map();
 const queuedHistoryReads = new Map();
 const historyPoll = new HistoryPoll();
 
+function publishHistoryError(command, error) {
+  return post(`/api/runner/${encodeURIComponent(deviceId)}/events`, {
+    type: 'thread_history_error', sessionId: command.sessionId, threadId: command.threadId,
+    historyRevision: command.historyRevision || 0, error: `读取对话失败：${error.message}`
+  });
+}
+
 async function publishRolloutHistory(command) {
   if (hiddenCommand(command)) return;
   const existing = historyReads.get(command.threadId);
@@ -338,7 +373,8 @@ async function publishRolloutHistory(command) {
       if (signature === historySignatures.get(command.threadId) && !command.force) return;
       if (await post(`/api/runner/${encodeURIComponent(deviceId)}/events`, data)) historySignatures.set(command.threadId, signature);
     } catch (error) {
-      await post(`/api/runner/${encodeURIComponent(deviceId)}/events`, { sessionId: command.sessionId, message: { method: 'runner/error', params: { message: `读取线程历史失败：${error.message}` } } });
+      historySignatures.delete(command.threadId);
+      await publishHistoryError(command, error);
     }
   })();
   historyReads.set(command.threadId, read);
@@ -378,7 +414,7 @@ function watchRollouts() {
       for (const [threadId, command] of historyCommands) {
         if (command.path.some(file => path.resolve(file.startsWith('\\\\?\\') ? file.slice(4) : file).toLowerCase() === changedPath)) scheduleHistoryRead(threadId);
       }
-      if (event === 'rename') { rolloutIndexPromise = null; listThreads(); }
+      if (event === 'rename') { rolloutIndexPromise = null; scheduleThreadListRefresh(); }
     });
     watcher.on('error', () => watcher.close());
   } catch { /* size checks below also recover missed filesystem events */ }
@@ -386,6 +422,8 @@ function watchRollouts() {
 
 async function codexCommand() {
   if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
+  const installed = await installedDesktopCli(process.env.CODEX_CLI_PATH);
+  if (installed) return installed;
   if (process.env.CODEX_CLI_PATH) {
     try { if ((await stat(process.env.CODEX_CLI_PATH)).isFile()) return process.env.CODEX_CLI_PATH; } catch { /* desktop path may be stale */ }
   }
@@ -441,13 +479,7 @@ async function startCodex() {
       if (message.id !== undefined && pending.has(message.id)) {
         const context = pending.get(message.id);
         pending.delete(message.id);
-        if (context.completion) { context.completion(message); return; }
-        if (message.result?.thread?.id) threadSessions.set(message.result.thread.id, context.sessionId);
-        if (context.method === 'thread/read' && message.result?.thread) {
-          for (const turn of message.result.thread.turns || []) turn.items = registerHistoryMedia(message.result.thread.id, (turn.items || []).map(item => ({ ...item, text:item.text || messageText(item.content), images:imageReferences(item.text || messageText(item.content), item.content).map(ref=>({ref})) })));
-        }
-        if (context.method === 'thread/list') await publishThreadList(message);
-        else await post(`/api/runner/${encodeURIComponent(deviceId)}/events`, { sessionId: context.sessionId, rpcMethod: context.method, message });
+        context.completion(message);
       } else {
         if (['account/rateLimits/updated','account/updated'].includes(message.method)) { readAccountUsage(); return; }
         if (message.params?.item?.type==='imageView' && message.params.threadId) message.params.item=registerHistoryMedia(message.params.threadId,[message.params.item])[0];
@@ -503,7 +535,7 @@ async function handleCommand(command) {
       threadSessions.set(result.thread.id,command.sessionId);
       if(desktop){desktopThreads.add(result.thread.id);nativeSubscriptions.add(result.thread.id);nativeSubscriptionSignature='';}else resumedThreads.add(result.thread.id);
       await post(`/api/runner/${encodeURIComponent(deviceId)}/events`, {sessionId:command.sessionId,rpcMethod:'thread/start',...(desktop ? {origin:'desktop'} : {}),message:{id:rpcId++,result}});
-      if(desktop)await syncNativeDesktop();
+      if(desktop)syncNativeDesktop();
     } catch (error) { await publish({ method:'runner/error', params:{message:error.message,ambiguous:Boolean(error.ambiguous)} }, command.sessionId); }
   } else if(command.type==='editMessage') {
     const recoveryDirectory=path.join(process.env.CODEX_RELAY_DATA_DIR || path.dirname(desktopBridge.native.endpointFile),'edit-recovery');
@@ -570,12 +602,26 @@ async function handleCommand(command) {
     } catch (error) { await publish({ method:command.mode === 'steer' || command.queuedStart ? 'runner/actionError' : 'runner/error', params:{action:command.queuedStart ? 'queued' : 'steer',message:error.message,ambiguous:Boolean(error.ambiguous),...(error.retryActive ? {retryActive:true,activeTurnId:error.activeTurnId} : {})} }, command.sessionId); }
   } else if (command.type === 'readThread') {
     if (hiddenCommand(command)) return;
-    const rolloutPaths = await rolloutPathsFor(command.threadId);
-    if (threadHistoryModes.get(command.threadId)==='paginated' || rolloutPaths.length) await publishRolloutHistory({ ...command, path: rolloutPaths });
-    else if (command.path) await publishRolloutHistory(command);
-    else sendRpc(command.sessionId, 'thread/read', { threadId: command.threadId, includeTurns: true });
+    try {
+      const rolloutPaths = await rolloutPathsFor(command.threadId);
+      if (threadHistoryModes.get(command.threadId)==='paginated' || rolloutPaths.length) await publishRolloutHistory({ ...command, path: rolloutPaths });
+      else if (command.path) await publishRolloutHistory(command);
+      else {
+        const result = await callRpc(command.sessionId, 'thread/read', { threadId: command.threadId, includeTurns: true });
+        if (result?.thread?.id !== command.threadId) throw new Error('执行器未返回所请求的对话。');
+        for (const turn of result.thread.turns || []) {
+          turn.items = registerHistoryMedia(command.threadId, (turn.items || []).map(item => {
+            const text = item.text || messageText(item.content);
+            return { ...item, text, images: imageReferences(text, item.content).map(ref => ({ref})) };
+          }));
+        }
+        await post(`/api/runner/${encodeURIComponent(deviceId)}/events`, {
+          sessionId: command.sessionId, rpcMethod: 'thread/read', historyRevision: command.historyRevision || 0, message: {result}
+        });
+      }
+    } catch (error) { await publishHistoryError(command, error); }
   } else if (command.type === 'listThreads') {
-    listThreads();
+    scheduleThreadListRefresh();
   } else if (command.type === 'interrupt') {
     if ((command.executionOwner === 'desktop' || desktopThreads.has(command.threadId)) && desktopBridge.native.configured) {
       try { await desktopBridge.native.interrupt(command); }
@@ -609,7 +655,7 @@ async function handleCommand(command) {
     hiddenCwds = new Set(command.hiddenCwds.map(normalizeCwd));
     nativeSubscriptions = new Set(command.threadIds || []);
     syncNativeDesktop();
-    for (const [threadId, tracked] of historyCommands) if (hiddenCommand(tracked) || !nativeSubscriptions.has(threadId)) {
+    for (const threadId of historyCommands.keys()) if (!nativeSubscriptions.has(threadId)) {
       clearTimeout(historyTimers.get(threadId)); historyTimers.delete(threadId);
       historyCommands.delete(threadId); historyReaders.delete(threadId); historySignatures.delete(threadId); mediaReferences.delete(threadId);
       queuedHistoryReads.delete(threadId); historyPoll.forget(threadId);
@@ -632,7 +678,8 @@ async function handleCommand(command) {
 }
 
 async function sendThroughDesktop(command) {
-  if(desktopBridge.native.configured) {
+  const native = desktopBridge.native.configured;
+  if(native) {
     // Install the event subscription before starting or steering the model.
     // The periodic sync may still be establishing the first subscription.
     nativeSubscriptions.add(command.threadId);
@@ -640,15 +687,19 @@ async function sendThroughDesktop(command) {
     await desktopBridge.native.subscribe([...nativeSubscriptions]);
     nativeSubscriptionSignature=JSON.stringify([...nativeSubscriptions].sort());
   }
-  const paths=await rolloutPathsFor(command.threadId);
-  if (command.permission && !historyReaders.get(command.threadId)?.settings?.permission && paths.length) {
-    await publishRolloutHistory({type:'readThread',sessionId:command.sessionId,threadId:command.threadId,cwd:command.cwd,path:paths,maxTurns:5});
+  const historyCommand = {type:'readThread',sessionId:command.sessionId,threadId:command.threadId,cwd:command.cwd,maxTurns:command.maxTurns || 5};
+  if (!native && command.permission && !historyReaders.get(command.threadId)?.settings?.permission) {
+    const paths = await rolloutPathsFor(command.threadId);
+    if (paths.length) await publishRolloutHistory({...historyCommand,path:paths});
   }
   const settings=historyReaders.get(command.threadId)?.settings || {};
   const result = await desktopBridge.send(command, settings.permission, settings.serviceTier);
   desktopThreads.add(command.threadId);
   await publish({method:'runner/desktopAccepted',params:{threadId:command.threadId, model:command.model, effort:command.effort, result}},command.sessionId);
-  if (paths.length) await publishRolloutHistory({type:'readThread',sessionId:command.sessionId,threadId:command.threadId,cwd:command.cwd,path:paths,maxTurns:command.maxTurns || 5});
+  if (historyCommands.has(command.threadId)) scheduleHistoryRead(command.threadId);
+  else void rolloutPathsFor(command.threadId).then(paths => {
+    if (paths.length) return publishRolloutHistory({...historyCommand,path:paths});
+  }).catch(error => console.error('历史同步失败：' + error.message));
 }
 
 async function connectCommands() {
@@ -662,6 +713,7 @@ async function connectCommands() {
       await post(`/api/runner/${encodeURIComponent(deviceId)}/events`,{type:'runtime',runtime:'ready',desktopThreadCreateRevision:1,ownershipRevision:1});
       lastThreadListSignature = '';
       historySignatures.clear();
+      listThreads();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';

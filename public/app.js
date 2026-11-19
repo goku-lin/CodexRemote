@@ -66,6 +66,7 @@ try { state.sessionsChoices = JSON.parse(localStorage.getItem('codex-relay-send-
 for (const key of Object.keys(state.sessionsChoices)) if (key.startsWith('device:')) delete state.sessionsChoices[key].serviceTier;
 try { state.activeSessionId = localStorage.getItem('codex-relay-active-session'); state.restoreSessionId = state.activeSessionId; } catch { /* first use */ }
 let renderTimer = null;
+let fullRenderPending = false;
 const pendingSends = new Map();
 let draftStorage;try{draftStorage=localStorage;}catch{/* memory fallback */}
 const drafts=new Drafts(draftStorage);
@@ -786,6 +787,10 @@ function applyEvent(event) {
     const visibleIds = new Set(state.sessions.map(session => session.id));
     if (visibleIds.has(state.restoreSessionId)) { state.activeSessionId=state.restoreSessionId; state.activeProjectId=sessionProjectId(activeSession()); state.selectedDeviceId=activeSession().deviceId; state.restoreSessionId=null; }
     for (const id of state.views.keys()) if (!visibleIds.has(id)) state.views.delete(id);
+    for (const session of state.sessions) {
+      const view = state.views.get(session.id);
+      if (view) { view.status = session.status; view.activeTurnId = session.activeTurnId; }
+    }
     if (!visibleIds.has(state.activeSessionId)) { state.activeSessionId = deviceSession(state.sessions,state.selectedDeviceId,state.deviceSessions[state.selectedDeviceId])?.id || null; state.activeProjectId = sessionProjectId(activeSession()); }
     if (!state.selectedDeviceId && state.devices[0]) state.selectedDeviceId = state.devices[0].id;
     const active = activeSession();
@@ -797,14 +802,20 @@ function applyEvent(event) {
     const previous = index >= 0 ? state.sessions[index] : null;
     const imported = (previous?.source || event.source) === 'imported';
     const historyRefresh = imported && event.historyLoaded && (!previous?.events?.length
+      || event.historyLimit !== previous?.historyLimit
       || (event.historyVersion ? event.historyVersion !== previous?.loadedHistoryVersion : event.updatedAt !== previous?.updatedAt));
     const next = { ...(previous || {}), ...event };
-    changed = sessionPatchChanged(previous,event);
+    if (event.historyError || previous?.historyError && event.historyError === null) next.historyRequested = false;
+    changed = sessionPatchChanged(previous,event) || next.historyRequested !== previous?.historyRequested;
     if (index >= 0) state.sessions[index] = next;
     else state.sessions.unshift(next);
     if (!state.activeSessionId && event.deviceId===state.selectedDeviceId) { state.activeSessionId = event.id; state.activeProjectId = sessionProjectId(event); }
-    const session = state.sessions.find(item => item.id === event.id);
-    if (session.id === state.activeSessionId && historyRefresh) loadSessionHistory(session);
+    const view = state.views.get(event.id);
+    if (view) {
+      if (Object.hasOwn(event,'status')) view.status = event.status;
+      if (Object.hasOwn(event,'activeTurnId')) view.activeTurnId = event.activeTurnId;
+    }
+    if (next.id === state.activeSessionId && historyRefresh && !event.historyError) loadSessionHistory(next);
   } else if (event.sessionId) {
     const session = state.sessions.find(item => item.id === event.sessionId);
     if (session) {
@@ -812,6 +823,10 @@ function applyEvent(event) {
       const previousStatus = session.status;
       changed = applyRelay(view, event) || previousStatus !== view.status;
       session.status = view.status;
+      if (previousStatus === view.status && event.type === 'codex' && ['item/agentMessage/delta','item/plan/delta','item/commandExecution/outputDelta'].includes(event.message.method)) {
+        if (changed && session.id === state.activeSessionId) scheduleRender({timelineOnly:true});
+        return;
+      }
     }
   }
   if (changed) {
@@ -1058,7 +1073,13 @@ async function requestSessionHistory(session, maxTurns = null,options={}) {
   if (session.historyRequested) return;
   session.historyRequested = true;
   try { await api(`/api/sessions/${encodeURIComponent(session.id)}/history`, { method: 'POST', body: JSON.stringify({ maxTurns: maxTurns || requestedHistoryLimit(session) }) }); }
-  catch { session.historyRequested = false; }
+  catch (error) {
+    const current = state.sessions.find(item => item.id === session.id) || session;
+    current.historyRequested = false;
+    current.historyFetchError = error.message;
+    if (current.id === state.activeSessionId) scheduleRender();
+    return;
+  }
   // Another browser may have already loaded these older turns on the server.
   if (session.historyLoaded && maxTurns != null) await loadSessionHistory(session,options);
 }
@@ -1074,7 +1095,7 @@ async function ensureSessionHistory(session,options={}) {
 async function loadSessionHistory(session,{background=false}={}) {
   if (!session) return;
   const limit = session.source === 'imported' ? requestedHistoryLimit(session) : 'all';
-  if (session.source === 'imported' && session.loadedHistoryVersion!=null && session.historyLoaded
+  if (session.source === 'imported' && session.loadedHistoryVersion!=null && session.historyLoaded && !session.historyFetchError
     && session.loadedHistoryVersion === session.historyVersion && session.loadedHistoryLimit === limit) return;
   if (state.historyLoads.has(session.id)) { state.historyReloads.add(session.id); return; }
   state.historyLoads.add(session.id);
@@ -1105,9 +1126,17 @@ async function loadSessionHistory(session,{background=false}={}) {
     if (Number.isFinite(result.messageCount)) session.messageCount = result.messageCount;
     session.historyRequested = false;
     session.cachedPreview=false;
+    const recovered = Boolean(session.historyFetchError);
+    session.historyFetchError = null;
     scheduleResumeSave();
-    if (changed) { state.views.delete(session.id); viewFor(session); if(session.id===state.activeSessionId)render(); }
-  } catch { /* the next session event will retry */ }
+    if (changed) { state.views.delete(session.id); viewFor(session); }
+    if ((changed || recovered) && session.id === state.activeSessionId) render();
+  } catch (error) {
+    const current = state.sessions.find(item => item.id === session.id) || session;
+    current.historyRequested = false;
+    current.historyFetchError = error.message;
+    if (current.id === state.activeSessionId) scheduleRender();
+  }
   finally {
     state.historyLoads.delete(session.id);
     if (state.historyReloads.delete(session.id)) loadSessionHistory(state.sessions.find(item => item.id === session.id));
@@ -1620,7 +1649,8 @@ function renderTimeline(view, session = null) {
   const requestedLimit = state.timelineLimits.get(key) || initialLimit;
   const currentLimit = requestedLimit === 'all' ? total : Math.min(requestedLimit, total || initialLimit);
   const visibleTurns = conversationTurns(turns).slice(-currentLimit);
-  const loadingHistory = session && !session.events?.length && (session.historyLoaded || session.historyRequested);
+  const historyError = session?.historyFetchError || session?.historyError;
+  const loadingHistory = session && !historyError && !session.events?.length && (session.historyLoaded || session.historyRequested);
   const rows = [];
   if (total > initialLimit) {
     const all = currentLimit >= total;
@@ -1630,6 +1660,7 @@ function renderTimeline(view, session = null) {
     rows.push({key:'pagination',html:'<div class="history-divider" data-node-key="turn-pagination"><span>最近 ' + visibleTurns.length + ' 个回合</span><div>' + (busy ? '<span class="muted">正在加载…</span>' : controls) + '</div></div>'});
   }
   if (loadingHistory) rows.push({key:'loading',html:'<div class="system-row" role="status" data-node-key="history-loading">正在加载对话…</div>'});
+  if (historyError) rows.push({key:'history-error',html:`<div class="system-row" role="status">${escapeHtml(historyError)} <button class="timeline-btn" id="retrySessionHistory" type="button">重试读取</button></div>`});
   for (const turn of visibleTurns) rows.push({key:'turn:'+turn.id,html:renderTurn(turn)});
   const edit=drafts.get(session?.id).edit;
   if(edit && !(view.timeline || []).some(item=>item.type==='userMessage' && item.id===edit.messageId))rows.push({key:'edit-recovery',html:renderMessageEditor(session,edit,'edit-recovery-'+edit.messageId)});
@@ -1660,6 +1691,11 @@ function renderTimeline(view, session = null) {
   if ($('expandTimelineMore')) $('expandTimelineMore').onclick = () => expand(Math.min(total, currentLimit + 5));
   if ($('showAllTimeline')) $('showAllTimeline').onclick = () => expand('all');
   if ($('recentTimeline')) $('recentTimeline').onclick = () => expand(initialLimit);
+  if ($('retrySessionHistory')) $('retrySessionHistory').onclick = () => {
+    const current = activeSession();
+    if (current?.historyError) return requestSessionHistory(current, requestedHistoryLimit(current));
+    return ensureSessionHistory(current);
+  };
   bindQuestions(messages);
   timelineViewport.restore(messages, scroll);
   latestNavigation?.after();
@@ -1809,11 +1845,18 @@ function render() {
   focusAttentionRequest();
 }
 
-function scheduleRender() {
+function scheduleRender({timelineOnly=false}={}) {
+  fullRenderPending ||= !timelineOnly;
   if (renderTimer !== null) return;
   renderTimer = window.setTimeout(() => {
     renderTimer = null;
-    render();
+    const full = fullRenderPending;
+    fullRenderPending = false;
+    if (full) render();
+    else {
+      const session = activeSession();
+      if (session) renderTimeline(viewFor(session), session);
+    }
   }, 60);
 }
 

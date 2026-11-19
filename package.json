@@ -1,6 +1,6 @@
 {
   "name": "codex-relay",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "codexRemote": {
     "updateRepository": "goku-lin/CodexRemote",
     "updateChannel": "preview"

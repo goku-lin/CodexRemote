@@ -10,7 +10,7 @@ import {normalizeQuestions,questionReplies} from '../public/questions.js';
 import {readFixture} from './desktop-read-fixture.mjs';
 
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function until(read,condition){for(let i=0;i<400;i++){const value=await read();if(condition(value))return value;await pause(20);}throw new Error('Desktop synchronization timed out');}
+async function until(read,condition,attempts=400){for(let i=0;i<attempts;i++){const value=await read();if(condition(value))return value;await pause(20);}throw new Error('Desktop synchronization timed out');}
 
 test('async answers resolve Desktop cards and native edits replace web history despite stale rollouts and late snapshots',{timeout:25000},async t=>{
   const directory=await mkdtemp(path.join(os.tmpdir(),'relay-desktop-sync-')),children=[];
@@ -49,11 +49,19 @@ test('async answers resolve Desktop cards and native edits replace web history d
     }
   }});
   await host.listen();host.fromDesktop({method:'initialized'});host.fromCore({method:'turn/started',params:{threadId:'original',turn:{id:'old',status:'inProgress'}}});
-  await writeFile(cliFile,`import readline from 'node:readline';import {readFileSync} from 'node:fs';
+  await writeFile(cliFile,`import readline from 'node:readline';import {existsSync,readFileSync} from 'node:fs';
     readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id==null)return;
       const turns=JSON.parse(readFileSync(process.env.FIXTURE_HISTORY,'utf8')),thread={id:'original',name:'Desktop sync',path:process.env.FIXTURE_ROLLOUT,historyMode:'paginated',cwd:process.env.CODEX_RELAY_CWD,createdAt:1,updatedAt:2,status:{type:'notLoaded'},turns:[]};
-      let result={};if(m.method==='thread/list')result={data:[thread]};if(m.method==='thread/read')result={thread};
-      if(m.method==='thread/turns/list'){const start=Number(m.params.cursor||0),data=turns.slice().reverse().slice(start,start+m.params.limit).map(t=>({...t,itemsView:m.params.itemsView,items:m.params.itemsView==='full'?t.items:[]}));result={data,nextCursor:start+data.length<turns.length?String(start+data.length):null};}
+      let result={};
+      if(m.method==='thread/list'){
+        const recent=process.env.FIXTURE_HISTORY+'.new-thread';
+        result={data:existsSync(recent)?[thread,JSON.parse(readFileSync(recent,'utf8'))]:[thread]};
+      }
+      if(m.method==='thread/read')result={thread};
+      if(m.method==='thread/turns/list'){
+        if(turns===null){process.stdout.write(JSON.stringify({id:m.id,error:{message:'fixture history unavailable'}})+'\\n');return;}
+        const start=Number(m.params.cursor||0),data=turns.slice().reverse().slice(start,start+m.params.limit).map(t=>({...t,itemsView:m.params.itemsView,items:m.params.itemsView==='full'?t.items:[]}));result={data,nextCursor:start+data.length<turns.length?String(start+data.length):null};
+      }
       process.stdout.write(JSON.stringify({id:m.id,result})+'\\n');});`);
   const env={...process.env,HOST:'127.0.0.1',PORT:String(port),CODEX_RELAY_NO_EMBEDDED:'1',CODEX_RELAY_TOKEN:'sync-fixture',CODEX_RELAY_DATA_DIR:directory,CODEX_HOME:directory,CODEX_RELAY_PARENT_PIPE:'0',CODEX_APP_TOOLS_PIPE_PATH:'',CODEX_THREAD_ID:'',CODEX_RELAY_NATIVE_ENDPOINT:endpointFile,CODEX_BIN:process.execPath,CODEX_ARGS_JSON:JSON.stringify([cliFile]),CODEX_SESSIONS_DIR:path.join(directory,'sessions'),CODEX_RELAY_CWD:directory,CODEX_RELAY_SERVER:base,FIXTURE_HISTORY:dbFile,FIXTURE_ROLLOUT:rolloutFile};
   Object.assign(env,{CODEX_APP_TOOLS_PIPE_PATH:'fixture',CODEX_THREAD_ID:'fixture-caller',CODEX_DESKTOP_BRIDGE_SERVER:toolFile,FIXTURE_GLOBAL:globalFile,FIXTURE_TOOL_CALLS:toolCalls});
@@ -74,6 +82,17 @@ test('async answers resolve Desktop cards and native edits replace web history d
   const pendingSummary=(await get('/api/sessions')).sessions.find(s=>s.id===session.id);
   assert.ok(pendingSummary.pendingAttention.some(item=>item.id==='ask' && item.kind==='question'),'an async question remains visible in sidebar metadata while Desktop is running');
   assert.equal(pendingSummary.status,'running');
+  await writeFile(dbFile,'null');
+  assert.equal((await post(historyUrl,{maxTurns:5})).status,202);
+  const readFailed=await until(async()=>(await get('/api/sessions')).sessions[0],s=>s?.historyError);
+  assert.match(readFailed.historyError,/fixture history unavailable/);
+  assert.equal(readFailed.status,'running');
+  assert.equal(readFailed.activeTurnId,'old');
+  assert.ok((await get(historyUrl)).events.some(e=>e.message?.params.item?.id==='ask'),'a history read failure leaves existing history available');
+  await save();
+  assert.equal((await post(historyUrl,{maxTurns:5})).status,202);
+  const readRecovered=await until(async()=>(await get('/api/sessions')).sessions[0],s=>s?.historyLoaded && s.historyError===null);
+  assert.equal(readRecovered.status,'running');
   // Reload our backend while the Desktop host and its unanswered card stay alive.
   for(const child of [runner,server]){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;}
   server=spawn(process.execPath,['server.mjs'],{cwd:new URL('..',import.meta.url),env,windowsHide:true});children.push(server);
@@ -124,4 +143,20 @@ test('async answers resolve Desktop cards and native edits replace web history d
   assert.equal((await get('/api/sessions')).sessions[0].unread,false);
   assert.equal(await readFile(toolCalls,'utf8'),'');
   const desktopSaved=JSON.parse(await readFile(globalFile,'utf8'));assert.deepEqual(desktopSaved['electron-thread-read-state-v1'].unreadByIdentity[readState.identity]['local:fixture'],['original'],'remote read receipts leave Desktop flags alone');
+
+  // A new thread can be committed to the Desktop DB without a rollout file rename.
+  const siblingProject={id:'shared-folder',name:'Hidden project',cwd:directory};
+  await writeFile(dbFile+'.new-thread',JSON.stringify({id:'new-desktop',name:'New Desktop chat',cwd:directory,createdAt:5,updatedAt:5,status:{type:'notLoaded'},relayProject:siblingProject}));
+  host.fromCore({method:'turn/started',params:{threadId:'new-desktop',turn:{id:'new-turn',status:'inProgress'}}});
+  const discovered=await until(async()=>(await get('/api/sessions')).sessions.find(s=>s.threadId==='new-desktop'),Boolean,150);
+  assert.equal(discovered.title,'New Desktop chat');
+  await until(async()=>[...host.peers].some(peer=>peer.authenticated && peer.threads.has('new-desktop')),Boolean,150);
+
+  const hidden=await fetch(base+'/api/projects',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({hiddenProjects:[discovered.projectId]})});
+  assert.equal(hidden.status,200);
+  await until(async()=>[...host.peers].some(peer=>peer.authenticated && peer.threads.has('original') && !peer.threads.has('new-desktop')),Boolean);
+  turns[0].items.at(-1).text='Visible project history after hide';await save();
+  assert.equal((await post(historyUrl,{maxTurns:5})).status,202);
+  await until(()=>get(historyUrl),h=>h.events.some(e=>e.message?.params.item?.text==='Visible project history after hide'));
+  assert.equal((await fetch(base+`/api/sessions/${discovered.id}/history`)).status,404);
 });
